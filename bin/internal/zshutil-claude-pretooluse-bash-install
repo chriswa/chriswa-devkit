@@ -3,18 +3,19 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execSync } = require('child_process');
 
 const homeDir = os.homedir();
 const claudeSettingsPath = path.join(homeDir, '.claude', 'settings.json');
 const zshutilPath = path.join(homeDir, 'zshutil');
-const cdDriftGuardPath = path.join(zshutilPath, 'bin', 'internal', 'claude-cd-drift-guard');
+const bashGuardPath = path.join(zshutilPath, 'bin', 'internal', 'claude-pretooluse-bash');
 
 const expectedHook = {
   matcher: "Bash",
   hooks: [
     {
       type: "command",
-      command: cdDriftGuardPath
+      command: bashGuardPath
     }
   ]
 };
@@ -29,6 +30,21 @@ function createBackup(filePath) {
   return backupPath;
 }
 
+function displayHookConfiguration(bashGuardPath, claudeSettingsPath) {
+  console.log(`Hook command: ${bashGuardPath}`);
+  console.log('\nCurrent configuration in ~/.claude/settings.json:');
+
+  try {
+    const jqOutput = execSync(
+      `jq '.hooks.PreToolUse' "${claudeSettingsPath}"`,
+      { encoding: 'utf8', shell: '/bin/bash' }
+    );
+    console.log(jqOutput);
+  } catch (jqError) {
+    console.log('(Unable to display hooks section with jq)');
+  }
+}
+
 function main() {
   try {
     console.log(`Working with file: ${claudeSettingsPath}`);
@@ -39,9 +55,9 @@ function main() {
       process.exit(1);
     }
 
-    // Check if ~/zshutil/bin/internal/claude-cd-drift-guard exists
-    if (!fs.existsSync(cdDriftGuardPath)) {
-      console.error('Error: ~/zshutil/bin/internal/claude-cd-drift-guard not found');
+    // Check if ~/zshutil/bin/internal/claude-pretooluse-bash exists
+    if (!fs.existsSync(bashGuardPath)) {
+      console.error('Error: ~/zshutil/bin/internal/claude-pretooluse-bash not found');
       process.exit(1);
     }
 
@@ -75,36 +91,37 @@ function main() {
     );
 
     if (existingBashHookIndex !== -1) {
-      // Check if our cd-drift-guard is already in the hooks
+      // Check if our Bash PreToolUse guard is already in the hooks
       const existingHooks = settings.hooks.PreToolUse[existingBashHookIndex].hooks || [];
       const alreadyInstalled = existingHooks.some(
-        h => h.type === "command" && h.command === cdDriftGuardPath
+        h => h.type === "command" && h.command === bashGuardPath
       );
 
       if (alreadyInstalled) {
-        console.log('CD Drift Guard hook is already installed in ~/.claude/settings.json');
-        process.exit(0);
+        console.log('Bash PreToolUse guard hook is already installed in ~/.claude/settings.json');
+        displayHookConfiguration(bashGuardPath, claudeSettingsPath);
+        return;
       }
 
       // Add our hook to the existing Bash matcher
       existingHooks.push({
         type: "command",
-        command: cdDriftGuardPath
+        command: bashGuardPath
       });
       settings.hooks.PreToolUse[existingBashHookIndex].hooks = existingHooks;
-      console.log('Added CD Drift Guard to existing Bash hooks');
+      console.log('Added Bash PreToolUse guard to existing Bash hooks');
     } else {
       // No Bash hook exists, add our complete hook configuration
       settings.hooks.PreToolUse.push(expectedHook);
-      console.log('Created new Bash hook with CD Drift Guard');
+      console.log('Created new Bash hook with PreToolUse guard');
     }
 
     // Write the updated settings back to file with pretty formatting
     const updatedContent = JSON.stringify(settings, null, 2) + '\n';
     fs.writeFileSync(claudeSettingsPath, updatedContent);
 
-    console.log('Successfully configured CD Drift Guard hook in ~/.claude/settings.json');
-    console.log(`Hook command: ${cdDriftGuardPath}`);
+    console.log('Successfully configured Bash PreToolUse guard hook in ~/.claude/settings.json');
+    displayHookConfiguration(bashGuardPath, claudeSettingsPath);
 
   } catch (error) {
     console.error('Error:', error.message);

@@ -1,3 +1,5 @@
 #!/bin/bash
 
-"$HOME/zshutil/bin/internal/zshutil-zshrc-install" && "$HOME/zshutil/bin/internal/zshutil-claude-statusline-install"
+"$HOME/zshutil/bin/internal/zshutil-zshrc-install" && \
+"$HOME/zshutil/bin/internal/zshutil-claude-statusline-install" && \
+"$HOME/zshutil/bin/internal/zshutil-claude-pretooluse-bash-install"

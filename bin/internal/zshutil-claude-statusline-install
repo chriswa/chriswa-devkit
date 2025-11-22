@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execSync } = require('child_process');
 
 const homeDir = os.homedir();
 const claudeSettingsPath = path.join(homeDir, '.claude', 'settings.json');
@@ -22,6 +23,22 @@ function createBackup(filePath) {
   fs.copyFileSync(filePath, backupPath);
   console.log(`Created backup: ${backupPath}`);
   return backupPath;
+}
+
+function displayStatusLineConfiguration(expectedStatusLine, claudeSettingsPath) {
+  console.log(`Set statusLine.type: ${expectedStatusLine.type}`);
+  console.log(`Set statusLine.command: ${expectedStatusLine.command}`);
+  console.log('\nCurrent configuration in ~/.claude/settings.json:');
+
+  try {
+    const jqOutput = execSync(
+      `jq '.statusLine' "${claudeSettingsPath}"`,
+      { encoding: 'utf8', shell: '/bin/bash' }
+    );
+    console.log(jqOutput);
+  } catch (jqError) {
+    console.log('(Unable to display statusLine section with jq)');
+  }
 }
 
 function main() {
@@ -55,11 +72,12 @@ function main() {
     }
 
     // Check if statusLine already exists and matches expected values
-    if (settings.statusLine && 
+    if (settings.statusLine &&
         settings.statusLine.type === expectedStatusLine.type &&
         settings.statusLine.command === expectedStatusLine.command) {
       console.log('Claude statusline is already installed in ~/.claude/settings.json');
-      process.exit(0);
+      displayStatusLineConfiguration(expectedStatusLine, claudeSettingsPath);
+      return;
     }
 
     // Initialize statusLine property if it doesn't exist
@@ -74,10 +92,9 @@ function main() {
     // Write the updated settings back to file with pretty formatting
     const updatedContent = JSON.stringify(settings, null, 2) + '\n';
     fs.writeFileSync(claudeSettingsPath, updatedContent);
-    
+
     console.log('Successfully configured Claude statusline in ~/.claude/settings.json');
-    console.log(`Set statusLine.type: ${expectedStatusLine.type}`);
-    console.log(`Set statusLine.command: ${expectedStatusLine.command}`);
+    displayStatusLineConfiguration(expectedStatusLine, claudeSettingsPath);
     
   } catch (error) {
     console.error('Error:', error.message);

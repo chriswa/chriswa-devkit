@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-# Claude Code Pre-Tool-Use Hook: CD Drift Guard
-# Purpose: Prevent Claude Code from changing directories away from the Git root,
-# which causes confusion. If already outside the root, allow everything so Claude
-# can find its way back.
+# Claude Code Pre-Tool-Use Hook: Bash Guards
+# Purpose: Multiple guards to prevent problematic Bash commands:
+#   1. CD Drift Guard: Prevent Claude Code from changing directories away from Git root
+#   2. Find Guard: Prevent find commands without node_modules exclusion (causes delays)
 
 # To use, add this hook to your ~/.claude/settings.json
 #   "hooks": {
@@ -13,7 +13,7 @@
 #         "hooks": [
 #           {
 #             "type": "command",
-#             "command": "/Users/chriswaddell/zshutil/bin/internal/claude-cd-drift-guard"
+#             "command": "/Users/chriswaddell/zshutil/bin/internal/claude-pretooluse-bash"
 #           }
 #         ]
 #       }
@@ -77,7 +77,23 @@ if [[ "$actual_cwd" != "$git_root" ]]; then
     exit 0
 fi
 
-# We ARE at the Git root. Check if the command starts with "cd"
+# ===== GUARDS FOR COMMANDS AT GIT ROOT =====
+
+# GUARD 1: Find Guard
+# Block find commands that don't exclude node_modules (causes excessive delays)
+if [[ "$normalized_cmd" =~ ^find[[:space:]] ]] && [[ ! "$normalized_cmd" =~ node_modules ]]; then
+    jq -n '{
+        hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: "To avoid excessive delays, do not use `find` without excluding `node_modules`"
+        }
+    }'
+    exit 0
+fi
+
+# GUARD 2: CD Drift Guard
+# Block cd commands when at the Git root
 if [[ "$normalized_cmd" =~ ^cd([[:space:]]|$) ]]; then
     # Block cd commands when at the Git root
     jq -n '{
