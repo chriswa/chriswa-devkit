@@ -1,24 +1,9 @@
 #!/usr/bin/env bash
 
 # Claude Code Pre-Tool-Use Hook: Bash Guards
-# Purpose: Multiple guards to prevent problematic Bash commands:
-#   1. CD Drift Guard: Prevent Claude Code from changing directories away from Git root
-#   2. Find Guard: Prevent find commands without node_modules exclusion (causes delays)
-
-# To use, add this hook to your ~/.claude/settings.json
-#   "hooks": {
-#     "PreToolUse": [
-#       {
-#         "matcher": "Bash",
-#         "hooks": [
-#           {
-#             "type": "command",
-#             "command": "/Users/chriswaddell/zshutil/bin/internal/claude-pretooluse-bash"
-#           }
-#         ]
-#       }
-#     ]
-#   },
+# Purpose: Prevent problematic Bash commands:
+#   1. CD Guard: Block cd commands (use subshells instead: (cd dir && command))
+#   2. Find Guard: Block find without node_modules exclusion (causes delays)
 
 # Read the hook input from stdin
 input=$(cat)
@@ -42,42 +27,8 @@ if [[ "$tool_name" != "Bash" ]]; then
     exit 0
 fi
 
-# Get the ACTUAL current working directory from the environment
-actual_cwd=$(pwd)
-
-# Get the Git root directory if we're in a Git repo
-git_root=$(git rev-parse --show-toplevel 2>/dev/null)
-
-# If we're not in a Git repository, allow all commands
-if [[ -z "$git_root" ]]; then
-    jq -n '{
-        hookSpecificOutput: {
-            hookEventName: "PreToolUse",
-            permissionDecision: "allow",
-            permissionDecisionReason: "Not in a Git repository"
-        }
-    }'
-    exit 0
-fi
-
 # Normalize the command by removing leading/trailing whitespace
 normalized_cmd=$(echo "$command" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-# Check if we're NOT at the Git root
-if [[ "$actual_cwd" != "$git_root" ]]; then
-    # We've already drifted away from the root - allow everything
-    # so Claude can navigate back however it wants
-    jq -n --arg cwd "$actual_cwd" --arg root "$git_root" '{
-        hookSpecificOutput: {
-            hookEventName: "PreToolUse",
-            permissionDecision: "allow",
-            permissionDecisionReason: "Already away from Git root (\($root)), allowing all commands to navigate back"
-        }
-    }'
-    exit 0
-fi
-
-# ===== GUARDS FOR COMMANDS AT GIT ROOT =====
 
 # GUARD 1: Find Guard
 # Block find commands that don't exclude node_modules (causes excessive delays)
@@ -92,26 +43,25 @@ if [[ "$normalized_cmd" =~ ^find[[:space:]] ]] && [[ ! "$normalized_cmd" =~ node
     exit 0
 fi
 
-# GUARD 2: CD Drift Guard
-# Block cd commands when at the Git root
+# GUARD 2: CD Guard
+# Block cd commands - they should be wrapped in a subshell
 if [[ "$normalized_cmd" =~ ^cd([[:space:]]|$) ]]; then
-    # Block cd commands when at the Git root
     jq -n '{
         hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "deny",
-            permissionDecisionReason: "CD Drift Guard: cd commands should be wrapped in a subshell: (cd subdir && command)"
+            permissionDecisionReason: "CD Guard: cd commands should be wrapped in a subshell: (cd subdir && command)"
         }
     }'
     exit 0
 fi
 
-# Allow all other commands when at the Git root
+# Allow all other commands
 jq -n '{
     hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "allow",
-        permissionDecisionReason: "Command allowed at Git root"
+        permissionDecisionReason: "Command allowed"
     }
 }'
 exit 0
