@@ -13,14 +13,14 @@ killport() {
         lsof_args+=("-i:$port")
     done
 
-    # Get PIDs and kill them
-    local pids=$(lsof -t "${lsof_args[@]}" 2>/dev/null)
+    # Get PIDs of processes LISTENING on the ports (not clients connected to them)
+    local pids=$(lsof -t -sTCP:LISTEN "${lsof_args[@]}" 2>/dev/null)
 
     if [ -z "$pids" ]; then
         echo "No processes found on ports: $@"
         return 1
     fi
 
-    echo "Killing processes on ports $@: $pids"
+    echo "Killing processes listening on ports $@: $pids"
     kill -9 $pids
 }
