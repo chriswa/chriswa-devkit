@@ -1,9 +1,12 @@
 {
   "name": "zshutil",
   "version": "1.0.0",
+  "type": "module",
   "description": "Modular zsh configuration and utilities",
   "scripts": {
-    "postinstall": "chmod +x bin/* && [ -d bin/internal ] && chmod +x bin/internal/*"
+    "postinstall": "chmod +x bin/* && [ -d bin/internal ] && chmod +x bin/internal/*",
+    "lint": "eslint bin/**/*.ts",
+    "lint:fix": "eslint bin/**/*.ts --fix"
   },
   "keywords": [
     "zsh",
@@ -13,5 +16,14 @@
   ],
   "author": "Chris Waddell",
   "license": "MIT",
-  "packageManager": "pnpm@10.10.0+sha512.d615db246fe70f25dcfea6d8d73dee782ce23e2245e3c4f6f888249fb568149318637dca73c2c5c8ef2a4ca0d5657fb9567188bfab47f566d1ee6ce987815c39"
+  "packageManager": "pnpm@10.10.0+sha512.d615db246fe70f25dcfea6d8d73dee782ce23e2245e3c4f6f888249fb568149318637dca73c2c5c8ef2a4ca0d5657fb9567188bfab47f566d1ee6ce987815c39",
+  "dependencies": {
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@chriswa/ts-config": "*",
+    "@types/bun": "latest",
+    "eslint": "^9.0.0",
+    "typescript": "^5.0.0"
+  }
 }

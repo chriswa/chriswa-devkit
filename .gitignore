@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Bun
+bun.lock
+
+# Build artifacts
+dist/
+*.js
+*.d.ts
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

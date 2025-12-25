@@ -1,0 +1,36 @@
+import type { Rule } from './types'
+
+// Git Mutation Guard: Block git commands that mutate state (require human approval)
+// Read-only git commands that are safe to run without approval
+const GIT_READONLY_COMMANDS = [
+  'status', 'diff', 'show', 'log', 'shortlog', 'reflog', 'blame', 'annotate',
+  'grep', 'ls-files', 'ls-tree', 'ls-remote', 'cat-file', 'rev-parse',
+  'rev-list', 'describe', 'name-rev', 'for-each-ref', 'var', 'fsck',
+  'verify-commit', 'verify-tag', 'check-ignore', 'check-attr', 'check-mailmap',
+  'diff-tree', 'diff-files', 'diff-index', 'range-diff', 'help', 'version',
+  'count-objects', 'cherry', 'whatchanged', 'merge-base', 'get-tar-commit-id',
+]
+
+export const evaluate: Rule = ({ normalizedCommand }) => {
+  // Only applies to git commands
+  if (!/^git\s/.test(normalizedCommand)) {
+    return null
+  }
+
+  // Extract the git subcommand (second word)
+  const gitSubcommand = normalizedCommand.split(/\s+/)[1] ?? ''
+
+  // Check if it's NOT a read-only command
+  if (!GIT_READONLY_COMMANDS.includes(gitSubcommand)) {
+    return {
+      decision: 'ask',
+      reason:
+        'Git Mutation Guard: git commands that mutate state require human approval. Prefix the command with the HUMAN_APPROVED_THIS_COMMAND=1 environment variable. Example: `HUMAN_APPROVED_THIS_COMMAND=1 git commit ...`\n' +
+        'IMPORTANT: You MUST seek explicit approval from a human before adding this environment variable, unless you are certain beyond any shadow of a doubt that the human has approved this instance of this particular operation. Be aware that prior approval of an operation does not imply future repeated consent unless explicitly declared. When in doubt, ask the human.',
+      priority: 100,
+    }
+  }
+
+  // Git command is read-only, no opinion
+  return null
+}

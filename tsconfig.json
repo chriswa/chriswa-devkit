@@ -1,0 +1,11 @@
+{
+  "extends": "@chriswa/ts-config/tsconfig",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["bun-types"],
+    "moduleResolution": "bundler",
+    "module": "esnext",
+    "target": "esnext"
+  },
+  "include": ["bin/**/*.ts"]
+}
