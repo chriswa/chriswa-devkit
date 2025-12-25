@@ -39,9 +39,7 @@ export const evaluate: Rule = ({ normalizedCommand }) => {
   if (!GIT_READONLY_COMMANDS.includes(gitSubcommand)) {
     return {
       decision: 'ask',
-      reason:
-        'Git Mutation Guard: git commands that mutate state require human approval. Prefix the command with the HUMAN_APPROVED_THIS_COMMAND=1 environment variable. Example: `HUMAN_APPROVED_THIS_COMMAND=1 git commit ...`\n' +
-        'IMPORTANT: You MUST seek explicit approval from a human before adding this environment variable, unless you are certain beyond any shadow of a doubt that the human has approved this instance of this particular operation. Be aware that prior approval of an operation does not imply future repeated consent unless explicitly declared. When in doubt, ask the human.',
+      reason: 'Git Mutation Guard: This git command potentially modifies repository state and requires approval.',
       priority: 100,
     }
   }
