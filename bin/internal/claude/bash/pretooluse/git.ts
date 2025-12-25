@@ -1,6 +1,8 @@
 import type { Rule } from './types'
 
-// Git Mutation Guard: Block git commands that mutate state (require human approval)
+// Git Guards: Enforce best practices for git commands
+// - Git Add Without Commit Guard: Deny standalone git add (encourage chaining with &&)
+// - Git Mutation Guard: Block git commands that mutate state (require human approval)
 // Read-only git commands that are safe to run without approval
 const GIT_READONLY_COMMANDS = [
   'status', 'diff', 'show', 'log', 'shortlog', 'reflog', 'blame', 'annotate',
@@ -15,6 +17,19 @@ export const evaluate: Rule = ({ normalizedCommand }) => {
   // Only applies to git commands
   if (!/^git\s/.test(normalizedCommand)) {
     return null
+  }
+
+  // Git Add Without Commit Guard: Deny git add without git commit in the same command
+  // This encourages using && to chain operations for atomic approval
+  if (/git\s+add\b/.test(normalizedCommand) && !/git\s+commit\b/.test(normalizedCommand)) {
+    return {
+      decision: 'deny',
+      reason:
+        'Do not perform linked git operations separately. Rather than doing a git add, then following up with a git commit, etc., use `&&` to chain them together so the user can approve everything all at once.\n\n' +
+        'Example: git add . && git commit -m "$(cat <<\'EOF\'\nYour commit message here\nEOF\n)"\n\n' +
+        'Note: The $(cat <<\'EOF\'...EOF) pattern ensures proper formatting and avoids shell interpretation issues, especially important for multi-line messages or special characters.',
+      priority: 110, // Higher priority than general git mutation guard
+    }
   }
 
   // Extract the git subcommand (second word)
