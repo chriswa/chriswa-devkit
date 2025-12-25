@@ -278,6 +278,12 @@ function findAllSessionFiles(maxAgeDays: number | null = null): Array<string> {
         walkDir(fullPath)
       }
       else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        // Skip subagent sessions (agent-*)
+        const sessionId = basename(entry.name, '.jsonl')
+        if (sessionId.startsWith('agent-')) {
+          continue
+        }
+
         // Filter by modification time if maxAgeDays is set
         if (cutoffTime !== null) {
           const stat = statSync(fullPath)
