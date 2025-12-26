@@ -1,4 +1,4 @@
-import type { Rule } from './types'
+import { Rule } from './types'
 
 // CD Guard: Block cd commands - they should be wrapped in a subshell
 export const evaluate: Rule = ({ normalizedCommand }) => {

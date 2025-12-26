@@ -5,11 +5,11 @@
 // Usage: claude-hook.ts <toolName> <hookType>
 // Example: claude-hook.ts bash pretooluse
 
+import { Rule, RuleContext, RuleDecision } from './types'
 import { writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { z } from 'zod'
-import type { Rule, RuleContext, RuleDecision } from './bash/pretooluse/types'
 
 // Parse CLI arguments
 const toolName = Bun.argv[2]?.toLowerCase()
@@ -21,13 +21,13 @@ if (!toolName || !hookType) {
   process.exit(1)
 }
 
-// Dynamically load all rules from the index file
+// Dynamically load all rules from the index file in the current directory
 // Using absolute path based on script location to work from any CWD
-const indexPath = join(import.meta.dir, toolName, hookType, 'index.ts')
+const indexPath = join(import.meta.dir, 'index.ts')
 
-let rules: Rule[] = []
+let rules: Array<Rule> = []
 try {
-  const rulesModule = await import(indexPath)
+  const rulesModule = await import(indexPath) as Record<string, unknown>
   // Extract all exported rule functions (excludes type exports)
   rules = Object.values(rulesModule).filter(
     (exp): exp is Rule => typeof exp === 'function',
@@ -85,7 +85,7 @@ function outputHookResponse(decision: 'allow' | 'deny' | 'ask', reason: string):
       permissionDecisionReason: reason,
     },
   }
-  console.log(JSON.stringify(response))
+  process.stdout.write(`${JSON.stringify(response)}\n`)
 }
 
 // Only apply this hook to the specified tool
@@ -103,7 +103,7 @@ const context: RuleContext = {
 }
 
 // Run ALL rules and collect decisions (filter out null responses)
-const decisions: RuleDecision[] = rules
+const decisions: Array<RuleDecision> = rules
   .map((rule) => rule(context))
   .filter((result): result is RuleDecision => result !== null)
 

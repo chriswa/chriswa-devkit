@@ -1,18 +1,19 @@
 {
-  "name": "zshutil",
+  "name": "chriswa-devkit",
   "version": "1.0.0",
   "type": "module",
-  "description": "Modular zsh configuration and utilities",
+  "description": "Personal development toolkit with shell config and Claude Code integration",
   "scripts": {
-    "postinstall": "chmod +x bin/* && [ -d bin/internal ] && chmod +x bin/internal/*",
-    "lint": "eslint bin/**/*.ts",
-    "lint:fix": "eslint bin/**/*.ts --fix"
+    "postinstall": "chmod +x bin/*",
+    "lint": "eslint '**/*.ts'",
+    "lint:fix": "eslint '**/*.ts' --fix"
   },
   "keywords": [
-    "zsh",
+    "chriswa-devkit",
+    "claude-code",
     "shell",
-    "configuration",
-    "utilities"
+    "zsh",
+    "developer-tools"
   ],
   "author": "Chris Waddell",
   "license": "MIT",

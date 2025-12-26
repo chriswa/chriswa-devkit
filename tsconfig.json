@@ -7,5 +7,5 @@
     "module": "esnext",
     "target": "esnext"
   },
-  "include": ["bin/**/*.ts"]
+  "include": ["bin/**/*.ts", "install/**/*.ts", "claude/**/*.ts"]
 }

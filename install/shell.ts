@@ -6,22 +6,24 @@ import { join } from 'path'
 
 const homeDir = homedir()
 const zshrcPath = join(homeDir, '.zshrc')
-const zshutilPath = join(homeDir, 'zshutil')
-const sourceLine = `source ${zshutilPath}/zshrc/index.sh`
+
+// Find the devkit root directory (parent of install/)
+const devkitPath = join(import.meta.dir, '..')
+const sourceLine = `source ${devkitPath}/shell/index.sh`
 
 function main() {
   try {
-    console.log(`Working with file: ${zshrcPath}`)
+    process.stdout.write(`Working with file: ${zshrcPath}\n`)
 
     // Check if ~/.zshrc exists
     if (!existsSync(zshrcPath)) {
-      console.error('Error: ~/.zshrc file not found')
+      process.stderr.write('Error: ~/.zshrc file not found\n')
       process.exit(1)
     }
 
-    // Check if ~/zshutil exists
-    if (!existsSync(zshutilPath)) {
-      console.error('Error: ~/zshutil directory not found')
+    // Check if devkit directory exists
+    if (!existsSync(devkitPath)) {
+      process.stderr.write(`Error: devkit directory not found at ${devkitPath}\n`)
       process.exit(1)
     }
 
@@ -30,7 +32,7 @@ function main() {
 
     // Check if the source line already exists
     if (zshrcContent.includes(sourceLine)) {
-      console.log('zshutil is already installed in ~/.zshrc')
+      process.stdout.write('chriswa-devkit shell config is already installed in ~/.zshrc\n')
       process.exit(0)
     }
 
@@ -48,15 +50,15 @@ function main() {
     // Write the updated content back to .zshrc
     writeFileSync(zshrcPath, newContent)
 
-    console.log('Successfully added zshutil source line to ~/.zshrc')
-    console.log(`Added: ${sourceLine}`)
+    process.stdout.write('Successfully added chriswa-devkit shell config to ~/.zshrc\n')
+    process.stdout.write(`Added: ${sourceLine}\n`)
   }
   catch (error: unknown) {
     if (error instanceof Error) {
-      console.error('Error:', error.message)
+      process.stderr.write(`Error: ${error.message}\n`)
     }
     else {
-      console.error('Error:', error)
+      process.stderr.write(`Error: ${String(error)}\n`)
     }
     process.exit(1)
   }

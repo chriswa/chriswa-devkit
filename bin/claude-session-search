@@ -1,0 +1,2 @@
+#!/usr/bin/env bun
+import '../claude/tools/session-search.ts'

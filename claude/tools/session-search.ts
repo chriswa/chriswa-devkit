@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
-import { basename, join } from 'path'
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { homedir } from 'os'
+import { basename, join } from 'path'
 import { z } from 'zod'
 
 const homeDir = homedir()
@@ -36,7 +36,6 @@ const ParsedLineSchema = z.object({
 })
 
 type ParsedLine = z.infer<typeof ParsedLineSchema>
-type ContentBlock = z.infer<typeof ContentBlockSchema>
 
 interface SessionMetadata {
   cwd: string | null
@@ -156,9 +155,7 @@ function extractSessionMetadata(lines: Array<string>): SessionMetadata {
 
     // Get timestamps from user/assistant messages
     if ((parsed.type === 'user' || parsed.type === 'assistant') && parsed.timestamp) {
-      if (!createdAt) {
-        createdAt = parsed.timestamp
-      }
+      createdAt ??= parsed.timestamp
       lastModifiedAt = parsed.timestamp
     }
 
@@ -263,7 +260,7 @@ function findAllSessionFiles(maxAgeDays: number | null = null): Array<string> {
   const sessionFiles: Array<string> = []
 
   if (!existsSync(claudeProjectsDir)) {
-    console.error(`Error: Claude projects directory not found: ${claudeProjectsDir}`)
+    process.stderr.write(`Error: Claude projects directory not found: ${claudeProjectsDir}\n`)
     process.exit(1)
   }
 
@@ -336,27 +333,27 @@ function parseArgs(args: Array<string>): Options {
   return result
 }
 
-async function main(): Promise<void> {
+function main(): void {
   const args = process.argv.slice(2)
 
   if (args.length === 0) {
-    console.log('Usage: claude-session-search <search-string> [options]')
-    console.log('')
-    console.log('Options:')
-    console.log('  --json          Output results as JSON')
-    console.log('  --sessions-only Only show session IDs with matches')
-    console.log('  --user          Only search in user messages')
-    console.log('  --assistant     Only search in assistant messages')
-    console.log('  --days <n>      Only search sessions modified in last n days')
-    console.log('')
-    console.log('Searches all Claude Code session files in ~/.claude/projects/')
+    process.stdout.write('Usage: claude-session-search <search-string> [options]\n')
+    process.stdout.write('\n')
+    process.stdout.write('Options:\n')
+    process.stdout.write('  --json          Output results as JSON\n')
+    process.stdout.write('  --sessions-only Only show session IDs with matches\n')
+    process.stdout.write('  --user          Only search in user messages\n')
+    process.stdout.write('  --assistant     Only search in assistant messages\n')
+    process.stdout.write('  --days <n>      Only search sessions modified in last n days\n')
+    process.stdout.write('\n')
+    process.stdout.write('Searches all Claude Code session files in ~/.claude/projects/\n')
     process.exit(1)
   }
 
   const opts = parseArgs(args)
 
   if (!opts.searchString) {
-    console.error('Error: No search string provided')
+    process.stderr.write('Error: No search string provided\n')
     process.exit(1)
   }
 
@@ -372,16 +369,16 @@ async function main(): Promise<void> {
     typeFilter = ['user', 'agent']
   }
 
-  console.error(`Searching for: "${opts.searchString}"`)
+  process.stderr.write(`Searching for: "${opts.searchString}"\n`)
   if (typeFilter) {
-    console.error(`Filtering by type: ${typeFilter.join(', ')}`)
+    process.stderr.write(`Filtering by type: ${typeFilter.join(', ')}\n`)
   }
   if (opts.days !== null) {
-    console.error(`Limiting to sessions modified in last ${opts.days} days`)
+    process.stderr.write(`Limiting to sessions modified in last ${opts.days} days\n`)
   }
 
   const sessionFiles = findAllSessionFiles(opts.days)
-  console.error(`Found ${sessionFiles.length} session files`)
+  process.stderr.write(`Found ${sessionFiles.length} session files\n`)
 
   const allResults: Array<SearchResult> = []
   const sessionsWithMatches = new Set<string>()
@@ -396,19 +393,19 @@ async function main(): Promise<void> {
 
   if (opts.sessionsOnly) {
     if (opts.jsonOutput) {
-      console.log(JSON.stringify([...sessionsWithMatches], null, 2))
+      process.stdout.write(`${JSON.stringify([...sessionsWithMatches], null, 2)}\n`)
     }
     else {
       for (const sessionId of sessionsWithMatches) {
-        console.log(sessionId)
+        process.stdout.write(`${sessionId}\n`)
       }
     }
   }
   else if (opts.jsonOutput) {
-    console.log(JSON.stringify(allResults, null, 2))
+    process.stdout.write(`${JSON.stringify(allResults, null, 2)}\n`)
   }
   else {
-    console.error(`\nFound ${allResults.length} matches in ${sessionsWithMatches.size} sessions:\n`)
+    process.stderr.write(`\nFound ${allResults.length} matches in ${sessionsWithMatches.size} sessions:\n\n`)
 
     // Group results by session
     const resultsBySession = new Map<
@@ -437,7 +434,7 @@ async function main(): Promise<void> {
       const { metadata } = session
       const cwd = metadata.cwd ?? '~'
       const command = `(cd ${cwd} && claude --resume ${sessionId})`
-      console.log(`${colors.headerBg}${colors.headerFg} ${command} ${colors.reset}`)
+      process.stdout.write(`${colors.headerBg}${colors.headerFg} ${command} ${colors.reset}\n`)
 
       // Display metadata
       const created = metadata.createdAt ? new Date(metadata.createdAt).toLocaleString() : 'unknown'
@@ -445,39 +442,31 @@ async function main(): Promise<void> {
         ? new Date(metadata.lastModifiedAt).toLocaleString()
         : 'unknown'
       const summary = metadata.summary ?? '(no summary)'
-      console.log(`Created: ${created} | Modified: ${modified} | Messages: ${metadata.humanMessageCount}`)
-      console.log(`Summary: ${summary}`)
-      console.log('')
+      process.stdout.write(`Created: ${created} | Modified: ${modified} | Messages: ${metadata.humanMessageCount}\n`)
+      process.stdout.write(`Summary: ${summary}\n`)
+      process.stdout.write('\n')
 
       for (const result of session.results) {
-        console.log(`  Line ${result.lineNumber} (${result.type}):`)
+        process.stdout.write(`  Line ${result.lineNumber} (${result.type}):\n`)
 
         // Show context before (dimmed)
         for (const ctx of result.contextBefore) {
-          console.log(`${colors.dim}    ${ctx.lineNumber} (${ctx.type}): ${ctx.content}${colors.reset}`)
+          process.stdout.write(`${colors.dim}    ${ctx.lineNumber} (${ctx.type}): ${ctx.content}${colors.reset}\n`)
         }
 
         // Show the matching line (match highlighted in blue)
         const highlightedContent = highlightMatch(result.matchContext, opts.searchString)
-        console.log(`  ► ${result.lineNumber} (${result.type}): ${highlightedContent}`)
+        process.stdout.write(`  ► ${result.lineNumber} (${result.type}): ${highlightedContent}\n`)
 
         // Show context after (dimmed)
         for (const ctx of result.contextAfter) {
-          console.log(`${colors.dim}    ${ctx.lineNumber} (${ctx.type}): ${ctx.content}${colors.reset}`)
+          process.stdout.write(`${colors.dim}    ${ctx.lineNumber} (${ctx.type}): ${ctx.content}${colors.reset}\n`)
         }
 
-        console.log('')
+        process.stdout.write('\n')
       }
     }
   }
 }
 
-main().catch((err: unknown) => {
-  if (err instanceof Error) {
-    console.error('Error:', err.message)
-  }
-  else {
-    console.error('Unknown error:', err)
-  }
-  process.exit(1)
-})
+main()

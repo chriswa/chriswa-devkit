@@ -8,8 +8,10 @@ import { z } from 'zod'
 
 const homeDir = homedir()
 const claudeSettingsPath = join(homeDir, '.claude', 'settings.json')
-const zshutilPath = join(homeDir, 'zshutil')
-const hookScriptPath = join(zshutilPath, 'bin', 'internal', 'claude', 'hook.ts')
+
+// Find the devkit root directory (parent of install/)
+const devkitPath = join(import.meta.dir, '..')
+const hookScriptPath = join(devkitPath, 'claude', 'hooks', 'pretooluse', 'bash', 'hook.ts')
 const hookCommand = `${hookScriptPath} bash pretooluse`
 
 const expectedHook = {
@@ -47,39 +49,39 @@ function createBackup(filePath: string): string {
   const backupPath = join(tmpdir(), `${fileName}.backup.${timestamp}`)
 
   copyFileSync(filePath, backupPath)
-  console.log(`Created backup: ${backupPath}`)
+  process.stdout.write(`Created backup: ${backupPath}\n`)
   return backupPath
 }
 
 function displayHookConfiguration(hookCommand: string, claudeSettingsPath: string): void {
-  console.log(`Hook command: ${hookCommand}`)
-  console.log('\nCurrent configuration in ~/.claude/settings.json:')
+  process.stdout.write(`Hook command: ${hookCommand}\n`)
+  process.stdout.write('\nCurrent configuration in ~/.claude/settings.json:\n')
 
   try {
     const jqOutput = execSync(`jq '.hooks.PreToolUse' "${claudeSettingsPath}"`, {
       encoding: 'utf8',
       shell: '/bin/bash',
     })
-    console.log(jqOutput)
+    process.stdout.write(jqOutput)
   }
   catch {
-    console.log('(Unable to display hooks section with jq)')
+    process.stdout.write('(Unable to display hooks section with jq)\n')
   }
 }
 
 function main(): void {
   try {
-    console.log(`Working with file: ${claudeSettingsPath}`)
+    process.stdout.write(`Working with file: ${claudeSettingsPath}\n`)
 
     // Check if ~/.claude/settings.json exists
     if (!existsSync(claudeSettingsPath)) {
-      console.error('Error: ~/.claude/settings.json file not found')
+      process.stderr.write('Error: ~/.claude/settings.json file not found\n')
       process.exit(1)
     }
 
-    // Check if ~/zshutil/bin/internal/claude/hook.ts exists
+    // Check if hook script exists
     if (!existsSync(hookScriptPath)) {
-      console.error('Error: ~/zshutil/bin/internal/claude/hook.ts not found')
+      process.stderr.write(`Error: ${hookScriptPath} not found\n`)
       process.exit(1)
     }
 
@@ -117,7 +119,7 @@ function main(): void {
       )
 
       if (alreadyInstalled) {
-        console.log('Bash PreToolUse guard hook is already installed in ~/.claude/settings.json')
+        process.stdout.write('Bash PreToolUse guard hook is already installed in ~/.claude/settings.json\n')
         displayHookConfiguration(hookCommand, claudeSettingsPath)
         return
       }
@@ -128,27 +130,27 @@ function main(): void {
         command: hookCommand,
       })
       settings.hooks.PreToolUse[existingBashHookIndex].hooks = existingHooks
-      console.log('Added Bash PreToolUse guard to existing Bash hooks')
+      process.stdout.write('Added Bash PreToolUse guard to existing Bash hooks\n')
     }
     else {
       // No Bash hook exists, add our complete hook configuration
       settings.hooks.PreToolUse.push(expectedHook)
-      console.log('Created new Bash hook with PreToolUse guard')
+      process.stdout.write('Created new Bash hook with PreToolUse guard\n')
     }
 
     // Write the updated settings back to file with pretty formatting
     const updatedContent = `${JSON.stringify(settings, null, 2)}\n`
     writeFileSync(claudeSettingsPath, updatedContent)
 
-    console.log('Successfully configured Bash PreToolUse guard hook in ~/.claude/settings.json')
+    process.stdout.write('Successfully configured Bash PreToolUse guard hook in ~/.claude/settings.json\n')
     displayHookConfiguration(hookCommand, claudeSettingsPath)
   }
   catch (error: unknown) {
     if (error instanceof Error) {
-      console.error('Error:', error.message)
+      process.stderr.write(`Error: ${error.message}\n`)
     }
     else {
-      console.error('Error:', error)
+      process.stderr.write(`Error: ${String(error)}\n`)
     }
     process.exit(1)
   }

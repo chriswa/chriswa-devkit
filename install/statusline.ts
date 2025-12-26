@@ -8,8 +8,10 @@ import { z } from 'zod'
 
 const homeDir = homedir()
 const claudeSettingsPath = join(homeDir, '.claude', 'settings.json')
-const zshutilPath = join(homeDir, 'zshutil')
-const claudeStatuslinePath = join(zshutilPath, 'bin', 'internal', 'claude', 'statusline.ts')
+
+// Find the devkit root directory (parent of install/)
+const devkitPath = join(import.meta.dir, '..')
+const claudeStatuslinePath = join(devkitPath, 'claude', 'statusline', 'index.ts')
 
 const expectedStatusLine = {
   type: 'command',
@@ -32,7 +34,7 @@ function createBackup(filePath: string): string {
   const backupPath = join(tmpdir(), `${fileName}.backup.${timestamp}`)
 
   copyFileSync(filePath, backupPath)
-  console.log(`Created backup: ${backupPath}`)
+  process.stdout.write(`Created backup: ${backupPath}\n`)
   return backupPath
 }
 
@@ -40,35 +42,35 @@ function displayStatusLineConfiguration(
   expectedStatusLine: { type: string, command: string },
   claudeSettingsPath: string,
 ): void {
-  console.log(`Set statusLine.type: ${expectedStatusLine.type}`)
-  console.log(`Set statusLine.command: ${expectedStatusLine.command}`)
-  console.log('\nCurrent configuration in ~/.claude/settings.json:')
+  process.stdout.write(`Set statusLine.type: ${expectedStatusLine.type}\n`)
+  process.stdout.write(`Set statusLine.command: ${expectedStatusLine.command}\n`)
+  process.stdout.write('\nCurrent configuration in ~/.claude/settings.json:\n')
 
   try {
     const jqOutput = execSync(`jq '.statusLine' "${claudeSettingsPath}"`, {
       encoding: 'utf8',
       shell: '/bin/bash',
     })
-    console.log(jqOutput)
+    process.stdout.write(jqOutput)
   }
   catch {
-    console.log('(Unable to display statusLine section with jq)')
+    process.stdout.write('(Unable to display statusLine section with jq)\n')
   }
 }
 
 function main(): void {
   try {
-    console.log(`Working with file: ${claudeSettingsPath}`)
+    process.stdout.write(`Working with file: ${claudeSettingsPath}\n`)
 
     // Check if ~/.claude/settings.json exists
     if (!existsSync(claudeSettingsPath)) {
-      console.error('Error: ~/.claude/settings.json file not found')
+      process.stderr.write('Error: ~/.claude/settings.json file not found\n')
       process.exit(1)
     }
 
-    // Check if ~/zshutil/bin/internal/claude/statusline exists
+    // Check if statusline script exists
     if (!existsSync(claudeStatuslinePath)) {
-      console.error('Error: ~/zshutil/bin/internal/claude/statusline not found')
+      process.stderr.write(`Error: ${claudeStatuslinePath} not found\n`)
       process.exit(1)
     }
 
@@ -93,7 +95,7 @@ function main(): void {
       && settings.statusLine.type === expectedStatusLine.type
       && settings.statusLine.command === expectedStatusLine.command
     ) {
-      console.log('Claude statusline is already installed in ~/.claude/settings.json')
+      process.stdout.write('Claude statusline is already installed in ~/.claude/settings.json\n')
       displayStatusLineConfiguration(expectedStatusLine, claudeSettingsPath)
       return
     }
@@ -109,15 +111,15 @@ function main(): void {
     const updatedContent = `${JSON.stringify(settings, null, 2)}\n`
     writeFileSync(claudeSettingsPath, updatedContent)
 
-    console.log('Successfully configured Claude statusline in ~/.claude/settings.json')
+    process.stdout.write('Successfully configured Claude statusline in ~/.claude/settings.json\n')
     displayStatusLineConfiguration(expectedStatusLine, claudeSettingsPath)
   }
   catch (error: unknown) {
     if (error instanceof Error) {
-      console.error('Error:', error.message)
+      process.stderr.write(`Error: ${error.message}\n`)
     }
     else {
-      console.error('Error:', error)
+      process.stderr.write(`Error: ${String(error)}\n`)
     }
     process.exit(1)
   }
