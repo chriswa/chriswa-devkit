@@ -1,4 +1,4 @@
-import { Rule } from './types'
+import { Rule } from '../../../types'
 
 // Find Guard: Block find commands that don't exclude node_modules (causes excessive delays)
 export const evaluate: Rule = ({ normalizedCommand }) => {

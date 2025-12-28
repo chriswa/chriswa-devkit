@@ -11,6 +11,7 @@ alias g=git
 alias gs='git status'
 alias gc='git commit'
 alias gb='git branch'
+alias gw='git worktree'
 
 alias gitroot='git rev-parse --show-toplevel 2>/dev/null'
 

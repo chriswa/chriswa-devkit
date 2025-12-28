@@ -2,8 +2,8 @@
 
 // Claude Code Hook Handler
 // Purpose: Generic hook handler that loads rules from a configurable directory
-// Usage: claude-hook.ts <toolName> <hookType>
-// Example: claude-hook.ts bash pretooluse
+// Usage: hook.ts <toolName> <hookType>
+// Example: hook.ts bash pretooluse
 
 import { Rule, RuleContext, RuleDecision } from './types'
 import { writeFileSync } from 'fs'
@@ -16,14 +16,15 @@ const toolName = Bun.argv[2]?.toLowerCase()
 const hookType = Bun.argv[3]?.toLowerCase()
 
 if (!toolName || !hookType) {
-  console.error('Usage: claude-hook.ts <toolName> <hookType>')
-  console.error('Example: claude-hook.ts bash pretooluse')
+  console.error('Usage: hook.ts <toolName> <hookType>')
+  console.error('Example: hook.ts bash pretooluse')
   process.exit(1)
 }
 
-// Dynamically load all rules from the index file in the current directory
-// Using absolute path based on script location to work from any CWD
-const indexPath = join(import.meta.dir, 'index.ts')
+// Dynamically load all rules from the index file based on hook type and tool name
+// The hook.ts file is now in claude/, and rules are in claude/hooks/{hookType}/{toolName}/
+const rulesDir = join(import.meta.dir, 'hooks', hookType, toolName)
+const indexPath = join(rulesDir, 'index.ts')
 
 let rules: Array<Rule> = []
 try {
@@ -50,7 +51,6 @@ const HookInputSchema = z.object({
 // Type for hook output
 interface HookOutput {
   hookSpecificOutput: {
-    hookEventName: 'PreToolUse'
     permissionDecision: 'allow' | 'deny' | 'ask'
     permissionDecisionReason: string
   }
@@ -77,12 +77,11 @@ const actualToolName = data.tool_name ?? ''
 const command = data.tool_input?.command ?? ''
 
 // Helper function to output hook response
-function outputHookResponse(decision: 'allow' | 'deny' | 'ask', reason: string): void {
+function outputHookResponse(permissionDecision: 'allow' | 'deny' | 'ask', permissionDecisionReason: string): void {
   const response: HookOutput = {
     hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: decision,
-      permissionDecisionReason: reason,
+      permissionDecision,
+      permissionDecisionReason,
     },
   }
   process.stdout.write(`${JSON.stringify(response)}\n`)

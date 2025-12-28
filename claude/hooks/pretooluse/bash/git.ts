@@ -1,4 +1,4 @@
-import { Rule } from './types'
+import { Rule } from '../../../types'
 
 // Git Guards: Enforce best practices for git commands
 // - Git Add Without Commit Guard: Deny standalone git add (encourage chaining with &&)
