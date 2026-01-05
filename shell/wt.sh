@@ -32,6 +32,13 @@ wt() {
 
   local worktree_path=~/wt/$repo_name/$branch_name
 
+  # If worktree already exists, just cd into it
+  if [[ -d "$worktree_path" ]]; then
+    echo "Worktree already exists at $worktree_path"
+    cd "$worktree_path"
+    return 0
+  fi
+
   echo "Creating worktree at $worktree_path..."
 
   # Create parent directory structure
@@ -59,6 +66,8 @@ wt() {
      git -C "$repo_path" show-ref --verify --quiet refs/remotes/origin/$branch_name; then
     echo "✓ Checking out existing branch '$branch_name'"
     git -C "$repo_path" worktree add "$worktree_path" "$branch_name" || return 1
+    # Set upstream tracking so pushes go to the correct remote branch
+    git -C "$worktree_path" branch --set-upstream-to=origin/$branch_name $branch_name 2>/dev/null
   else
     echo "✓ Creating new branch '$branch_name' from origin/$default_branch"
     git -C "$repo_path" worktree add "$worktree_path" -b "$branch_name" "origin/$default_branch" || return 1
