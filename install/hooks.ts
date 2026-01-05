@@ -12,7 +12,7 @@ const claudeSettingsPath = join(homeDir, '.claude', 'settings.json')
 // Find the devkit root directory (parent of install/)
 const devkitPath = join(import.meta.dir, '..')
 const hookScriptPath = join(devkitPath, 'claude', 'hook.ts')
-const hookCommand = `${hookScriptPath} bash pretooluse`
+const hookCommand = `${hookScriptPath} bash PreToolUse`
 
 const expectedHook = {
   matcher: 'Bash',

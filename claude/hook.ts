@@ -2,8 +2,8 @@
 
 // Claude Code Hook Handler
 // Purpose: Generic hook handler that loads rules from a configurable directory
-// Usage: hook.ts <toolName> <hookType>
-// Example: hook.ts bash pretooluse
+// Usage: hook.ts <toolName> <hookEventName>
+// Example: hook.ts bash PreToolUse
 
 import { Rule, RuleContext, RuleDecision } from './types'
 import { writeFileSync } from 'fs'
@@ -13,17 +13,37 @@ import { z } from 'zod'
 
 // Parse CLI arguments
 const toolName = Bun.argv[2]?.toLowerCase()
-const hookType = Bun.argv[3]?.toLowerCase()
+const hookEventName = Bun.argv[3]
 
-if (!toolName || !hookType) {
-  console.error('Usage: hook.ts <toolName> <hookType>')
-  console.error('Example: hook.ts bash pretooluse')
+if (!toolName || !hookEventName) {
+  console.error('Usage: hook.ts <toolName> <hookEventName>')
+  console.error('Example: hook.ts bash PreToolUse')
+  process.exit(1)
+}
+
+// Complete list of all valid Claude Code hook event names
+const validHookEventNames = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'UserPromptSubmit',
+  'PermissionRequest',
+  'Notification',
+  'Stop',
+  'SubagentStop',
+  'PreCompact',
+  'SessionStart',
+  'SessionEnd',
+])
+
+if (!validHookEventNames.has(hookEventName)) {
+  console.error(`Unknown hook event name: ${hookEventName}`)
+  console.error(`Valid hook event names: ${Array.from(validHookEventNames).join(', ')}`)
   process.exit(1)
 }
 
 // Dynamically load all rules from the index file based on hook type and tool name
-// The hook.ts file is now in claude/, and rules are in claude/hooks/{hookType}/{toolName}/
-const rulesDir = join(import.meta.dir, 'hooks', hookType, toolName)
+// The hook.ts file is now in claude/, and rules are in claude/hooks/{hookEventName}/{toolName}/
+const rulesDir = join(import.meta.dir, 'hooks', hookEventName.toLowerCase(), toolName)
 const indexPath = join(rulesDir, 'index.ts')
 
 let rules: Array<Rule> = []
@@ -48,9 +68,11 @@ const HookInputSchema = z.object({
   }).optional(),
 })
 
-// Type for hook output
+// Type for hook output (correct format per Claude Code docs)
 interface HookOutput {
   hookSpecificOutput: {
+    hookEventName: 'PreToolUse' | 'PostToolUse' | 'UserPromptSubmit' | 'PermissionRequest' |
+      'Notification' | 'Stop' | 'SubagentStop' | 'PreCompact' | 'SessionStart' | 'SessionEnd'
     permissionDecision: 'allow' | 'deny' | 'ask'
     permissionDecisionReason: string
   }
@@ -80,6 +102,7 @@ const command = data.tool_input?.command ?? ''
 function outputHookResponse(permissionDecision: 'allow' | 'deny' | 'ask', permissionDecisionReason: string): void {
   const response: HookOutput = {
     hookSpecificOutput: {
+      hookEventName,
       permissionDecision,
       permissionDecisionReason,
     },
