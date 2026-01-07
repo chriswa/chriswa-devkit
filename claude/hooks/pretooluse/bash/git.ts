@@ -19,15 +19,30 @@ export const evaluate: Rule = ({ normalizedCommand }) => {
     return null
   }
 
+  // Multi-line Commit Message Guard: Deny commit messages with newlines
+  // Check if this is a git commit command with a message
+  if (/git\s+commit\b/.test(normalizedCommand) && /-m\s/.test(normalizedCommand)) {
+    // Check if the commit message contains newlines
+    // This regex looks for -m followed by a quoted string containing \n or actual newlines
+    const hasNewlines = /\n/.test(normalizedCommand)
+
+    if (hasNewlines) {
+      return {
+        decision: 'deny',
+        reason: 'Commit messages should be one line only. Please use a single-line commit message without newlines.',
+        priority: 120, // Highest priority to catch this early
+      }
+    }
+  }
+
   // Git Add Without Commit Guard: Deny git add without git commit in the same command
   // This encourages using && to chain operations for atomic approval
-  if (/git\s+add\b/.test(normalizedCommand) && !/git\s+commit\b/.test(normalizedCommand)) {
+  if (/^git\s+add\b/.test(normalizedCommand) && !/git\s+commit\b/.test(normalizedCommand)) {
     return {
       decision: 'deny',
       reason:
-        'Do not perform linked git operations separately. Rather than doing a git add, then following up with a git commit, etc., use `&&` to chain them together so the user can approve everything all at once.\n\n' +
-        'Example: git add . && git commit -m "$(cat <<\'EOF\'\nYour commit message here\nEOF\n)"\n\n' +
-        'Note: The $(cat <<\'EOF\'...EOF) pattern ensures proper formatting and avoids shell interpretation issues, especially important for multi-line messages or special characters.',
+        'Do not perform linked git operations separately. Commit messages should be single-line. Use `&&` to chain git add, commit, and push together so the user can approve everything all at once.\n\n' +
+        'Example: git add foo.ts bar.ts && git commit -m "Your commit message" && git push',
       priority: 110, // Higher priority than general git mutation guard
     }
   }
