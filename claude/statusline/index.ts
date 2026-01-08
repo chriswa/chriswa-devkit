@@ -162,8 +162,12 @@ catch {
 
 // Build status line parts
 const parts: Array<string> = []
-parts.push(dir)
-if (branch) parts.push(branch)
+// Combine dir and branch into one part, using arrow separator if different
+if (branch && branch !== dir) {
+  parts.push(`${dir} → ${branch}`)
+} else {
+  parts.push(dir)
+}
 parts.push(model)
 
 if (cost !== undefined) {
