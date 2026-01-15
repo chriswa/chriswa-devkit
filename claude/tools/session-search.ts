@@ -68,6 +68,7 @@ interface Options {
   userOnly: boolean
   assistantOnly: boolean
   days: number | null
+  cwd: string | null
   searchString: string | null
 }
 
@@ -256,7 +257,15 @@ function searchSessionFile(
   return results
 }
 
-function findAllSessionFiles(maxAgeDays: number | null = null): Array<string> {
+// Convert a path to Claude's directory name format (e.g., /Users/foo -> -Users-foo)
+function pathToClaudeDirName(path: string): string {
+  // Normalize the path and remove trailing slashes
+  const normalized = path.replace(/\/+$/, '')
+  // Replace all slashes with dashes and add leading dash
+  return normalized.replace(/\//g, '-')
+}
+
+function findAllSessionFiles(maxAgeDays: number | null = null, cwdFilter: string | null = null): Array<string> {
   const sessionFiles: Array<string> = []
 
   if (!existsSync(claudeProjectsDir)) {
@@ -265,6 +274,9 @@ function findAllSessionFiles(maxAgeDays: number | null = null): Array<string> {
   }
 
   const cutoffTime = maxAgeDays !== null ? Date.now() - maxAgeDays * 24 * 60 * 60 * 1000 : null
+
+  // Convert cwd filter to Claude's directory name format for matching
+  const cwdDirPattern = cwdFilter ? pathToClaudeDirName(cwdFilter) : null
 
   // Recursively find all .jsonl files in the projects directory
   function walkDir(dir: string): void {
@@ -279,6 +291,14 @@ function findAllSessionFiles(maxAgeDays: number | null = null): Array<string> {
         const sessionId = basename(entry.name, '.jsonl')
         if (sessionId.startsWith('agent-')) {
           continue
+        }
+
+        // Filter by cwd if specified (match parent directory name)
+        if (cwdDirPattern !== null) {
+          const parentDir = basename(join(fullPath, '..'))
+          if (parentDir !== cwdDirPattern) {
+            continue
+          }
         }
 
         // Filter by modification time if maxAgeDays is set
@@ -304,6 +324,7 @@ function parseArgs(args: Array<string>): Options {
     userOnly: false,
     assistantOnly: false,
     days: null,
+    cwd: null,
     searchString: null,
   }
 
@@ -323,6 +344,14 @@ function parseArgs(args: Array<string>): Options {
     }
     else if (arg === '--days' && i + 1 < args.length) {
       result.days = Number.parseInt(args[i + 1], 10)
+      i++ // skip next arg
+    }
+    else if (arg === '--cwd') {
+      // Always use current working directory
+      result.cwd = process.cwd()
+    }
+    else if (arg === '--dir' && i + 1 < args.length) {
+      result.cwd = args[i + 1]
       i++ // skip next arg
     }
     else if (!arg.startsWith('--')) {
@@ -345,6 +374,8 @@ function main(): void {
     process.stdout.write('  --user          Only search in user messages\n')
     process.stdout.write('  --assistant     Only search in assistant messages\n')
     process.stdout.write('  --days <n>      Only search sessions modified in last n days\n')
+    process.stdout.write('  --cwd           Only search sessions in the current working directory\n')
+    process.stdout.write('  --dir <path>    Only search sessions in the specified directory\n')
     process.stdout.write('\n')
     process.stdout.write('Searches all Claude Code session files in ~/.claude/projects/\n')
     process.exit(1)
@@ -376,8 +407,11 @@ function main(): void {
   if (opts.days !== null) {
     process.stderr.write(`Limiting to sessions modified in last ${opts.days} days\n`)
   }
+  if (opts.cwd !== null) {
+    process.stderr.write(`Filtering to sessions in: ${opts.cwd}\n`)
+  }
 
-  const sessionFiles = findAllSessionFiles(opts.days)
+  const sessionFiles = findAllSessionFiles(opts.days, opts.cwd)
   process.stderr.write(`Found ${sessionFiles.length} session files\n`)
 
   const allResults: Array<SearchResult> = []
