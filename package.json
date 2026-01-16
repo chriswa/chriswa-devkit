@@ -1,6 +1,5 @@
 {
   "name": "chriswa-devkit",
-  "version": "1.0.1",
   "type": "module",
   "description": "Personal development toolkit with shell config and Claude Code integration",
   "scripts": {
