@@ -9,7 +9,6 @@ const installDir = import.meta.dir
 const scripts = [
   join(installDir, 'shell.ts'),
   join(installDir, 'statusline.ts'),
-  join(installDir, 'hooks.ts'),
 ]
 
 try {

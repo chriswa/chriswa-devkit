@@ -1,0 +1,13 @@
+{
+  "name": "chriswa-devkit-marketplace",
+  "owner": {
+    "name": "chriswa",
+    "github": "chriswa"
+  },
+  "plugins": [
+    {
+      "name": "chriswa-devkit",
+      "source": "./"
+    }
+  ]
+}

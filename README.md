@@ -13,6 +13,8 @@ Personal development toolkit combining shell customization with Claude Code safe
 
 ## Installation
 
+### 1. Shell & Statusline Setup
+
 ```bash
 cd ~/chriswa-devkit
 chriswa-devkit-install
@@ -20,30 +22,49 @@ chriswa-devkit-install
 
 This will:
 1. Add `source ~/chriswa-devkit/shell/index.sh` to your `~/.zshrc`
-2. Register Claude Code hooks in `~/.claude/settings.json`
-3. Configure custom statusline in `~/.claude/settings.json`
+2. Configure custom statusline in `~/.claude/settings.json`
+
+### 2. Claude Code Plugin (Hooks)
+
+From within Claude Code, run:
+
+```bash
+/plugin marketplace add ~/chriswa-devkit
+/plugin install chriswa-devkit@chriswa-devkit-marketplace
+```
+
+This installs the Bash command safety guards as a Claude Code plugin.
+
+**Updating the plugin:** When changes are made, bump the version in `.claude-plugin/plugin.json`. Claude Code will detect the new version and update automatically.
 
 ## Project Structure
 
 ```
 chriswa-devkit/
-├── shell/              # Shell customization
+├── .claude-plugin/     # Claude Code plugin manifest
+│   ├── marketplace.json
+│   └── plugin.json
+├── hooks/              # Claude Code hooks (plugin)
+│   ├── hooks.json     # Hook configuration
+│   └── bash/          # Bash command guards
+│       ├── cd-guard.ts
+│       ├── find-guard.ts
+│       └── git-guard.ts
+├── claude/            # Claude Code utilities
+│   ├── statusline/    # Custom status display
+│   └── tools/         # Session search utility
+├── shell/             # Shell customization
 │   ├── index.sh       # Main entry point
 │   ├── aliases.sh     # Command shortcuts
 │   ├── prompt.sh      # Custom prompt with git status
 │   ├── path.sh        # PATH management
 │   └── killport.sh    # Port cleanup utility
-├── claude/            # Claude Code integration
-│   ├── hooks/         # PreToolUse safety guards
-│   ├── statusline/    # Custom status display
-│   └── tools/         # Session search utility
 ├── bin/               # Executable wrappers
 │   ├── chriswa-devkit-install
 │   └── claude-session-search
 └── install/           # Installation scripts
     ├── index.ts       # Main installer
     ├── shell.ts       # Shell config installer
-    ├── hooks.ts       # Hooks installer
     └── statusline.ts  # Statusline installer
 ```
 
