@@ -35,37 +35,45 @@ From within Claude Code, run:
 
 This installs the Bash command safety guards as a Claude Code plugin.
 
-**Updating the plugin:** When changes are made, bump the version in `.claude-plugin/plugin.json`. Claude Code will detect the new version and update automatically.
+**Updating the plugin:** When changes are made, bump the version in `default-plugin/.claude-plugin/plugin.json`. Claude Code will detect the new version and update automatically.
 
 ## Project Structure
 
 ```
 chriswa-devkit/
-├── .claude-plugin/     # Claude Code plugin manifest
-│   ├── marketplace.json
-│   └── plugin.json
-├── hooks/              # Claude Code hooks (plugin)
-│   ├── hooks.json     # Hook configuration
-│   └── bash/          # Bash command guards
-│       ├── cd-guard.ts
-│       ├── find-guard.ts
-│       └── git-guard.ts
-├── claude/            # Claude Code utilities
-│   ├── statusline/    # Custom status display
-│   └── tools/         # Session search utility
-├── shell/             # Shell customization
-│   ├── index.sh       # Main entry point
-│   ├── aliases.sh     # Command shortcuts
-│   ├── prompt.sh      # Custom prompt with git status
-│   ├── path.sh        # PATH management
-│   └── killport.sh    # Port cleanup utility
-├── bin/               # Executable wrappers
+├── .claude-plugin/           # Claude Code marketplace
+│   └── marketplace.json
+├── default-plugin/           # Claude Code plugin
+│   ├── .claude-plugin/
+│   │   └── plugin.json
+│   ├── commands/             # Slash commands
+│   │   ├── fork.md
+│   │   └── hello.md
+│   ├── hooks/                # Event handlers
+│   │   ├── hooks.json
+│   │   └── bash/
+│   │       ├── cd-guard.ts
+│   │       ├── find-guard.ts
+│   │       └── git-guard.ts
+│   └── scripts/              # Utility scripts
+│       ├── iterm2-fork-session.js
+│       └── capture-session-id.sh
+├── claude/                   # Claude Code utilities (not plugin)
+│   ├── statusline/
+│   └── tools/
+├── shell/                    # Shell customization
+│   ├── index.sh
+│   ├── aliases.sh
+│   ├── prompt.sh
+│   ├── path.sh
+│   └── killport.sh
+├── bin/                      # Executable wrappers
 │   ├── chriswa-devkit-install
 │   └── claude-session-search
-└── install/           # Installation scripts
-    ├── index.ts       # Main installer
-    ├── shell.ts       # Shell config installer
-    └── statusline.ts  # Statusline installer
+└── install/                  # Installation scripts
+    ├── index.ts
+    ├── shell.ts
+    └── statusline.ts
 ```
 
 ## Features
