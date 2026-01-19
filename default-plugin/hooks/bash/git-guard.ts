@@ -30,7 +30,6 @@ function output(decision: 'allow' | 'deny' | 'ask', reason: string): void {
       permissionDecision: decision,
       permissionDecisionReason: reason,
     },
-    systemMessage: reason,
   }))
 }
 

@@ -19,5 +19,4 @@ console.log(JSON.stringify({
     permissionDecision: 'deny',
     permissionDecisionReason: reason,
   },
-  systemMessage: reason,
 }))
