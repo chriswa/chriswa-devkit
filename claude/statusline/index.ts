@@ -16,13 +16,7 @@ const StatusLineInputSchema = z.object({
     project_dir: z.string().optional(),
   }).optional(),
   context_window: z.object({
-    current_usage: z.object({
-      input_tokens: z.number().optional(),
-      output_tokens: z.number().optional(),
-      cache_creation_input_tokens: z.number().optional(),
-      cache_read_input_tokens: z.number().optional(),
-    }).optional(),
-    context_window_size: z.number().optional(),
+    remaining_percentage: z.number().optional(),
   }).optional(),
   cost: z.object({
     total_cost_usd: z.number().optional(),
@@ -115,14 +109,7 @@ const data: StatusLineInput = parseResult.data
 const model = data.model?.display_name ?? 'Unknown'
 const currentDir = data.workspace?.current_dir ?? '/'
 const projectDir = data.workspace?.project_dir ?? '/'
-
-// Extract context window data for effective token calculation
-const inputTokens = data.context_window?.current_usage?.input_tokens ?? 0
-const outputTokens = data.context_window?.current_usage?.output_tokens ?? 0
-const cacheCreationTokens = data.context_window?.current_usage?.cache_creation_input_tokens ?? 0
-const cacheReadTokens = data.context_window?.current_usage?.cache_read_input_tokens ?? 0
-const contextWindowSize = data.context_window?.context_window_size ?? 200000
-
+const remainingPercentage = data.context_window?.remaining_percentage ?? 100
 const cost = data.cost?.total_cost_usd
 const sessionId = data.session_id
 
@@ -175,12 +162,22 @@ if (cost !== undefined) {
   parts.push(`$${costDisplay}`)
 }
 
-// Calculate effective tokens and usage percentage
-const effectiveTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
-const usagePercentage = contextWindowSize > 0
-  ? (effectiveTokens * 100 / contextWindowSize).toFixed(2)
-  : '0.00'
-parts.push(`${usagePercentage}%`)
+// Color thresholds for remaining percentage (sorted ascending - lowest first)
+// Uses \x1b[22m to turn off dim, then bright colors, then restore dim with \x1b[2m
+const colorThresholds = [
+  { threshold: 10, color: '\x1b[22m\x1b[91m' },       // bright red
+  { threshold: 25, color: '\x1b[22m\x1b[38;5;214m' }, // bright orange (256-color)
+  { threshold: 50, color: '\x1b[22m\x1b[38;5;186m' },  // soft yellow (256-color)
+]
+
+let percentageDisplay = `${remainingPercentage}%`
+for (const { threshold, color } of colorThresholds) {
+  if (remainingPercentage <= threshold) {
+    percentageDisplay = `${color}${remainingPercentage}%\x1b[2m\x1b[39m`
+    break
+  }
+}
+parts.push(percentageDisplay)
 
 // Load window state and calculate reset time
 const stateFilePath = join(homedir(), '.claude.statusline-state.json')
