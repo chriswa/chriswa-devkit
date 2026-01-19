@@ -37,7 +37,7 @@ function output(decision: 'allow' | 'deny' | 'ask', reason: string): void {
 // Multi-line Commit Message Guard: Deny commit messages with newlines
 if (/git\s+commit\b/.test(command) && /-m\s/.test(command)) {
   if (/\n/.test(command)) {
-    output('deny', 'Commit messages should be one line only. Please use a single-line commit message without newlines.')
+    output('deny', 'Commit messages should be one line only. Add `&& git push` if pushing immediately after.')
     process.exit(0)
   }
 }
@@ -45,8 +45,9 @@ if (/git\s+commit\b/.test(command) && /-m\s/.test(command)) {
 // Git Add Without Commit Guard: Deny standalone git add (should be chained with &&)
 if (/^git\s+add\b/.test(command) && !/&&/.test(command)) {
   output('deny',
-    'Do not perform linked git operations separately. Commit messages should be single-line. Use `&&` to chain git add, commit, and push together so the user can approve everything all at once.\n\n' +
-    'Example: git add foo.ts bar.ts && git commit -m "Your commit message" && git push')
+    'Solitary git add is disallowed to avoid permission spam. Commit messages must be single-line or will be rejected. ' +
+    'Chain git operations with `&&`. Include `&& git push` if pushing after.\n' +
+    'Example: git add foo.ts && git commit -m "Message" && git push')
   process.exit(0)
 }
 
