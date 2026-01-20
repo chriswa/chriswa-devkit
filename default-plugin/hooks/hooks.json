@@ -19,17 +19,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/cd-guard.ts",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/bash-cd.ts",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/find-guard.ts",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/bash-find.ts",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/git-guard.ts",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/bash-git.ts",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/bash-grep.ts",
             "timeout": 10
           }
         ]
