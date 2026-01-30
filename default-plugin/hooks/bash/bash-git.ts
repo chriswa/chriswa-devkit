@@ -10,7 +10,8 @@ const command = (input.tool_input?.command ?? '').trim()
 
 // Only applies to git commands
 if (!/^git\s/.test(command)) {
-  process.exit(0) // No opinion
+  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse' }, continue: true, suppressOutput: true }))
+  process.exit(0)
 }
 
 // Read-only git commands that are safe to run without approval
@@ -30,6 +31,7 @@ function output(decision: 'allow' | 'deny' | 'ask', reason: string): void {
       permissionDecision: decision,
       permissionDecisionReason: reason,
     },
+    systemMessage: reason,
   }))
 }
 
@@ -60,4 +62,5 @@ if (!GIT_READONLY_COMMANDS.includes(gitSubcommand)) {
 }
 
 // Git command is read-only, no opinion
+console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse' }, continue: true, suppressOutput: true }))
 process.exit(0)

@@ -6,6 +6,9 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { z } from 'zod'
 
+// Autocompact buffer size in tokens
+const AUTOCOMPACT_BUFFER = 45000
+
 // Zod schema for status line input
 const StatusLineInputSchema = z.object({
   model: z.object({
@@ -16,6 +19,13 @@ const StatusLineInputSchema = z.object({
     project_dir: z.string().optional(),
   }).optional(),
   context_window: z.object({
+    context_window_size: z.number().optional(),
+    current_usage: z.object({
+      input_tokens: z.number().optional(),
+      output_tokens: z.number().optional(),
+      cache_creation_input_tokens: z.number().optional(),
+      cache_read_input_tokens: z.number().optional(),
+    }).optional(),
     remaining_percentage: z.number().optional(),
   }).optional(),
   cost: z.object({
@@ -109,9 +119,25 @@ const data: StatusLineInput = parseResult.data
 const model = data.model?.display_name ?? 'Unknown'
 const currentDir = data.workspace?.current_dir ?? '/'
 const projectDir = data.workspace?.project_dir ?? '/'
-const remainingPercentage = data.context_window?.remaining_percentage ?? 100
 const cost = data.cost?.total_cost_usd
 const sessionId = data.session_id
+
+// Calculate remaining percentage accounting for autocompact buffer
+const contextWindow = data.context_window
+const usage = contextWindow?.current_usage
+let remainingPercentage: number
+
+if (contextWindow?.context_window_size && usage) {
+  const totalTokens = (usage.input_tokens ?? 0)
+    + (usage.output_tokens ?? 0)
+    + (usage.cache_creation_input_tokens ?? 0)
+    + (usage.cache_read_input_tokens ?? 0)
+  const effectiveContextSize = contextWindow.context_window_size - AUTOCOMPACT_BUFFER
+  remainingPercentage = (1 - totalTokens / effectiveContextSize) * 100
+} else {
+  // Fallback to API's remaining_percentage if detailed data unavailable
+  remainingPercentage = contextWindow?.remaining_percentage ?? 100
+}
 
 // Calculate directory display
 let dir: string
@@ -170,10 +196,11 @@ const colorThresholds = [
   { threshold: 50, color: '\x1b[22m\x1b[38;5;186m' },  // soft yellow (256-color)
 ]
 
-let percentageDisplay = `${remainingPercentage}%`
+const remainingFormatted = remainingPercentage.toFixed(2)
+let percentageDisplay = `${remainingFormatted}%`
 for (const { threshold, color } of colorThresholds) {
   if (remainingPercentage <= threshold) {
-    percentageDisplay = `${color}${remainingPercentage}%\x1b[2m\x1b[39m`
+    percentageDisplay = `${color}${remainingFormatted}%\x1b[2m\x1b[39m`
     break
   }
 }
@@ -191,10 +218,16 @@ writeFileSync(stateFilePath, JSON.stringify({ currentWindow }, null, 2))
 const resetTime = formatTimeUntilReset(currentWindow.endTime)
 parts.push(resetTime)
 
-// Add session_id at the end
+// Add session_id
 if (sessionId !== undefined && sessionId !== '') {
   parts.push(sessionId)
 }
+
+// Add current date/time in MySQL format (without seconds)
+const now = new Date()
+const pad = (n: number) => n.toString().padStart(2, '0')
+const datetime = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+parts.push(datetime)
 
 // Join parts with " | "
 const result = parts.join(' | ')

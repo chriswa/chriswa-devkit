@@ -8,7 +8,8 @@ const command = (input.tool_input?.command ?? '').trim()
 
 // Only applies to cd commands
 if (!/^cd(\s|$)/.test(command)) {
-  process.exit(0) // No opinion
+  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse' }, continue: true, suppressOutput: true }))
+  process.exit(0)
 }
 
 // Block cd commands
@@ -19,4 +20,5 @@ console.log(JSON.stringify({
     permissionDecision: 'deny',
     permissionDecisionReason: reason,
   },
+  systemMessage: reason,
 }))

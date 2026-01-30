@@ -7,20 +7,23 @@ const command = (input.tool_input?.command ?? '').trim()
 
 // Only applies to find commands
 if (!/^find\s/.test(command)) {
-  process.exit(0) // No opinion
+  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse' }, continue: true, suppressOutput: true }))
+  process.exit(0)
 }
 
 // If node_modules is mentioned (excluded), allow it
 if (command.includes('node_modules')) {
-  process.exit(0) // No opinion - exclusion present
+  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse' }, continue: true, suppressOutput: true }))
+  process.exit(0)
 }
 
 // Find command without node_modules exclusion
-const reason = 'To avoid excessive delays, do not use `find` without excluding `node_modules`'
+const reason = 'Find Guard: To avoid excessive delays, do not use `find` without excluding `node_modules`'
 console.log(JSON.stringify({
   hookSpecificOutput: {
     hookEventName: 'PreToolUse',
     permissionDecision: 'deny',
     permissionDecisionReason: reason,
   },
+  systemMessage: reason,
 }))
