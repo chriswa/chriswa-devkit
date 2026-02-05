@@ -47,7 +47,6 @@ chriswa-devkit/
 │   ├── .claude-plugin/
 │   │   └── plugin.json
 │   ├── commands/             # Slash commands
-│   │   ├── fork.md
 │   │   └── hello.md
 │   ├── hooks/                # Event handlers
 │   │   ├── hooks.json
@@ -56,7 +55,6 @@ chriswa-devkit/
 │   │       ├── find-guard.ts
 │   │       └── git-guard.ts
 │   └── scripts/              # Utility scripts
-│       ├── iterm2-fork-session.js
 │       └── capture-session-id.sh
 ├── claude/                   # Claude Code utilities (not plugin)
 │   ├── statusline/

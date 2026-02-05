@@ -9,9 +9,9 @@ alias whatissleep='sudo pmset -g | grep SleepDisabled'
 # Git aliases
 alias g=git
 alias gs='git status'
+alias ga='git add'
 alias gc='git commit'
-alias gb='git branch'
-alias gw='git worktree'
+alias gd='git diff'
 
 alias gitroot='git rev-parse --show-toplevel 2>/dev/null'
 

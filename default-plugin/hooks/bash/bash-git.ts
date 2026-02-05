@@ -5,6 +5,10 @@
 // - Git Add Without Commit Guard: Deny standalone git add (encourage chaining with &&)
 // - Git Mutation Guard: Block git commands that mutate state (require human approval)
 
+import { appendFileSync } from "node:fs"
+import { join } from "node:path"
+import { homedir } from "node:os"
+
 const input = JSON.parse(await Bun.stdin.text())
 const command = (input.tool_input?.command ?? '').trim()
 
@@ -57,6 +61,10 @@ const gitSubcommand = command.split(/\s+/)[1] ?? ''
 
 // If it's NOT a read-only command, require approval
 if (!GIT_READONLY_COMMANDS.includes(gitSubcommand)) {
+  // Log mutation commands for later analysis
+  const logPath = join(homedir(), '_claude_git_mutations.txt')
+  appendFileSync(logPath, command + '\n\n')
+
   output('ask', 'Git Mutation Guard: This git command potentially modifies repository state and requires approval.')
   process.exit(0)
 }

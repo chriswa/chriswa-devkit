@@ -58,6 +58,12 @@ function set_prompt() {
   PROMPT="${branch_name}${exit_colour} ${cwd} ${reset}${bright_white_on_black} "
 }
 
-# Set up the prompt hook
+# Reset colors just before command executes (prevents color bleed into output)
+function reset_colors_before_exec() {
+  printf '\e[0m'
+}
+
+# Set up the prompt hooks
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd set_prompt
+add-zsh-hook preexec reset_colors_before_exec
