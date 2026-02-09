@@ -1,5 +1,5 @@
 {
   "name": "chriswa-devkit",
   "description": "Personal development toolkit with shell config, statusline, and Bash command guards for Claude Code",
-  "version": "2.0.20"
+  "version": "2.0.22"
 }

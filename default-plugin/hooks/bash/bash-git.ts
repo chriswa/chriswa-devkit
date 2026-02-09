@@ -56,8 +56,27 @@ if (/^git\s+add\b/.test(command) && !/&&/.test(command)) {
   process.exit(0)
 }
 
-// Extract the git subcommand (second word)
-const gitSubcommand = command.split(/\s+/)[1] ?? ''
+// Extract the git subcommand, skipping known global flags like -C <path>
+function extractGitSubcommand(cmd: string): string {
+  const parts = cmd.split(/\s+/)
+  let i = 1 // skip 'git'
+  const flagsWithArg = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--exec-path'])
+  const standaloneFlags = new Set(['--no-pager', '--bare', '--no-replace-objects', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs', '--no-optional-locks'])
+  while (i < parts.length) {
+    const part = parts[i]
+    if (flagsWithArg.has(part)) {
+      i += 2 // skip flag + its argument
+    } else if ([...flagsWithArg].some(f => part.startsWith(f + '='))) {
+      i += 1 // skip --flag=value form
+    } else if (standaloneFlags.has(part)) {
+      i += 1 // skip known standalone flag
+    } else {
+      return part
+    }
+  }
+  return ''
+}
+const gitSubcommand = extractGitSubcommand(command)
 
 // If it's NOT a read-only command, require approval
 if (!GIT_READONLY_COMMANDS.includes(gitSubcommand)) {

@@ -15,4 +15,7 @@ alias gd='git diff'
 
 alias gitroot='git rev-parse --show-toplevel 2>/dev/null'
 
-alias p=pnpm
+alias p='pnpm'
+
+alias c='claude'
+alias ct='CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude'

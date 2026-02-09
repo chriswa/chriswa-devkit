@@ -44,26 +44,13 @@ grep -i "search_term" "$SESSION_FILE" | jq -r '.message.content // .message.cont
 
 ## Understanding the Session File Format
 
-The session file is JSONL (one JSON object per line). Each line has a `type` field:
-- `"type": "user"` - User messages (content is a string)
-- `"type": "assistant"` - Agent messages (content is an array of content blocks)
-- `"type": "summary"` - Session summary
+For the full JSONL schema, jq patterns, and advanced analysis techniques, load the `claude-code-session-files` skill. A quick summary:
 
-For deeper analysis of the file format, examine the source code of the `claude-session-search` CLI tool:
-
-```bash
-# The tool is in the path - find its source:
-cat $(which claude-session-search)
-# This shows it imports from: claude/tools/session-search.ts
-
-# Read the source for parsing logic:
-cat ~/chriswa-devkit/claude/tools/session-search.ts
-```
-
-The source code shows how to:
-- Parse different message types
-- Extract text content from both user and assistant messages
-- Handle content block arrays (filtering out tool_use/tool_result)
+- `"type": "user"` with `message.content` as **string** = human-typed message
+- `"type": "user"` with `message.content` as **array** = tool result
+- `"type": "assistant"` with content blocks of `type: "text"` = agent text output
+- `"type": "assistant"` with content blocks of `type: "tool_use"` = tool invocations
+- `"type": "summary"` = session summary
 
 ## Recommendation: Use a Sub-Agent
 
