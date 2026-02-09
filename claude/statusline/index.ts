@@ -7,7 +7,7 @@ import { join } from 'path'
 import { z } from 'zod'
 
 // Autocompact buffer size in tokens
-const AUTOCOMPACT_BUFFER = 45000
+const AUTOCOMPACT_BUFFER = 33000
 
 // Zod schema for status line input
 const StatusLineInputSchema = z.object({
