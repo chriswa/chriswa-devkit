@@ -12,6 +12,7 @@ alias gs='git status'
 alias ga='git add'
 alias gc='git commit'
 alias gd='git diff'
+alias gf='git diff'
 
 alias gitroot='git rev-parse --show-toplevel 2>/dev/null'
 
