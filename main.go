@@ -31,7 +31,7 @@ const (
 )
 
 type paths struct {
-	home, socket, work, log, usage string
+	home, socket, work, log, usage, forks string
 }
 
 func resolvePaths() paths {
@@ -46,6 +46,7 @@ func resolvePaths() paths {
 		work:   filepath.Join(home, "work"),
 		log:    filepath.Join(home, "daemon.log"),
 		usage:  filepath.Join(home, "usage.jsonl"),
+		forks:  filepath.Join(home, "forks.jsonl"),
 	}
 }
 
@@ -78,6 +79,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   claude-print-daemon ask [flags] [prompt-file]   send a prompt (stdin if no file or "-")
       -s <session-id>      continue a session
+      --fork <session-id>  start a new session as a fork of this one (any Claude Code
+                           session; its transcript is copied, never written to)
+      --cwd <dir>          with --fork: the directory the source session ran in
       -m <model>           model alias or id (default haiku)
       -e <effort>          effort level (default medium)
       --system-file <f>    system prompt for a new session (default empty)
@@ -101,6 +105,8 @@ type askBody struct {
 	SystemPrompt string `json:"system_prompt,omitempty"`
 	NoThinking   bool   `json:"no_thinking,omitempty"`
 	Tag          string `json:"tag,omitempty"`
+	ForkFrom     string `json:"fork_from,omitempty"`
+	Cwd          string `json:"cwd,omitempty"`
 }
 
 func serve(args []string) error {
@@ -146,6 +152,7 @@ func serve(args []string) error {
 	pool := NewPool(Config{
 		ClaudeBin:      bin,
 		Dir:            pt.work,
+		ForkLog:        pt.forks,
 		SpareTTL:       15 * time.Minute,
 		IdleTTL:        15 * time.Minute,
 		MaxLive:        5,
@@ -205,11 +212,13 @@ func handler(pool *Pool, ul *usageLog) http.Handler {
 			b.Effort = defaultEffort
 		}
 		started := time.Now()
-		log.Printf("ask tag=%s session=%s model=%s no_thinking=%v prompt=%d chars", orNone(b.Tag), orNone(b.SessionID), b.Model, b.NoThinking, len(b.Prompt))
+		log.Printf("ask tag=%s session=%s fork_from=%s cwd=%s model=%s no_thinking=%v prompt=%d chars", orNone(b.Tag), orNone(b.SessionID), orNone(b.ForkFrom), orNone(b.Cwd), b.Model, b.NoThinking, len(b.Prompt))
 		resp, err := pool.Ask(AskRequest{
 			Prompt:    b.Prompt,
 			SessionID: b.SessionID,
 			Tag:       b.Tag,
+			ForkFrom:  b.ForkFrom,
+			Dir:       b.Cwd,
 			Profile:   Profile{Model: b.Model, Effort: b.Effort, SystemPrompt: b.SystemPrompt, NoThinking: b.NoThinking},
 		})
 		if err != nil {
@@ -261,6 +270,7 @@ type usageEntry struct {
 	Tag          string          `json:"tag,omitempty"`
 	SessionID    string          `json:"session_id"`
 	Source       Source          `json:"source"`
+	ForkedFrom   string          `json:"forked_from,omitempty"`
 	Model        string          `json:"model"`
 	TotalCostUSD float64         `json:"total_cost_usd"`
 	WallMS       int64           `json:"wall_ms"`
@@ -269,7 +279,7 @@ type usageEntry struct {
 
 func (u *usageLog) append(r *AskResponse, tag string) {
 	e := usageEntry{
-		Time: time.Now(), Tag: tag, SessionID: r.SessionID, Source: r.Source,
+		Time: time.Now(), Tag: tag, SessionID: r.SessionID, Source: r.Source, ForkedFrom: r.ForkedFrom,
 		Model: r.Model, TotalCostUSD: r.TotalCostUSD, WallMS: r.WallMS, Usage: r.Usage,
 	}
 	if r.IsError {
@@ -279,7 +289,7 @@ func (u *usageLog) append(r *AskResponse, tag string) {
 }
 
 func (u *usageLog) appendFailure(b askBody, err error) {
-	u.write(usageEntry{Time: time.Now(), Tag: b.Tag, SessionID: b.SessionID, Model: b.Model, Error: err.Error()})
+	u.write(usageEntry{Time: time.Now(), Tag: b.Tag, SessionID: b.SessionID, ForkedFrom: b.ForkFrom, Model: b.Model, Error: err.Error()})
 }
 
 func (u *usageLog) write(e usageEntry) {
@@ -405,7 +415,25 @@ func ask(args []string) error {
 	systemFile := fs.String("system-file", "", "system prompt file")
 	noThinking := fs.Bool("no-thinking", false, "disable extended thinking")
 	tag := fs.String("tag", "", "caller name for the usage log")
+	fork := fs.String("fork", "", "session id to fork")
+	cwd := fs.String("cwd", "", "with --fork: the source session's working directory")
 	_ = fs.Parse(args)
+	if *fork != "" {
+		if *session != "" {
+			return errors.New("--fork starts a new session; it cannot be combined with -s")
+		}
+		if *cwd == "" {
+			return errors.New("--fork needs --cwd, the directory the source session ran in")
+		}
+		// The daemon runs elsewhere, so a relative path means nothing to it.
+		abs, err := filepath.Abs(*cwd)
+		if err != nil {
+			return err
+		}
+		*cwd = abs
+	} else if *cwd != "" {
+		return errors.New("--cwd only applies with --fork; a continued session runs where it was filed")
+	}
 
 	var prompt []byte
 	var err error
@@ -417,7 +445,7 @@ func ask(args []string) error {
 	if err != nil {
 		return err
 	}
-	body := askBody{Prompt: string(prompt), SessionID: *session, Model: *model, Effort: *effort, NoThinking: *noThinking, Tag: *tag}
+	body := askBody{Prompt: string(prompt), SessionID: *session, ForkFrom: *fork, Cwd: *cwd, Model: *model, Effort: *effort, NoThinking: *noThinking, Tag: *tag}
 	if *systemFile != "" {
 		sp, err := os.ReadFile(*systemFile)
 		if err != nil {
