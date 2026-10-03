@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -23,9 +24,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// The fake keeps each session's context size in a file under its working
+// directory, so that it carries across processes as a transcript would:
+// a turn adds its prompt's length, /compact cuts it to a tenth.
 func fakeClaude() {
 	var sessionID, model string
-	resume := false
+	resume, slash := false, true
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -35,12 +39,25 @@ func fakeClaude() {
 			sessionID, resume = args[i+1], true
 		case "--model":
 			model = args[i+1]
+		case "--disable-slash-commands":
+			slash = false
 		}
 	}
 	if f, err := os.OpenFile(os.Getenv("FAKE_SPAWN_LOG"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-		fmt.Fprintf(f, "%s %s %v\n", sessionID, model, resume)
+		kind := "turn"
+		if slash {
+			kind = "slash"
+		}
+		fmt.Fprintf(f, "%s %s %v %s\n", sessionID, model, resume, kind)
 		f.Close()
 	}
+	ctxFile := "ctx-" + sessionID
+	readCtx := func() int {
+		b, _ := os.ReadFile(ctxFile)
+		n, _ := strconv.Atoi(string(b))
+		return n
+	}
+	writeCtx := func(n int) { _ = os.WriteFile(ctxFile, []byte(strconv.Itoa(n)), 0o600) }
 	if d := os.Getenv("FAKE_START_DELAY"); d != "" {
 		dur, _ := time.ParseDuration(d)
 		time.Sleep(dur)
@@ -69,9 +86,32 @@ func fakeClaude() {
 			out.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": m.RequestID}})
 		case m.Type == "control_request":
 			out.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": m.RequestID, "response": map[string]any{}}})
+		case m.Type == "user" && m.Message.Content == "/compact":
+			out.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": sessionID, "model": model})
+			if !slash {
+				out.Encode(map[string]any{"type": "result", "subtype": "success", "session_id": sessionID,
+					"result": "/compact isn't available in this environment."})
+				continue
+			}
+			if d := os.Getenv("FAKE_COMPACT_DELAY"); d != "" {
+				dur, _ := time.ParseDuration(d)
+				time.Sleep(dur)
+			}
+			pre := readCtx()
+			post := max(pre/10, 1)
+			writeCtx(post)
+			out.Encode(map[string]any{"type": "system", "subtype": "compact_boundary", "session_id": sessionID,
+				"compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": pre, "post_tokens": post}})
+			out.Encode(map[string]any{"type": "result", "subtype": "success", "session_id": sessionID,
+				"result": "", "local_command": "compact", "total_cost_usd": 0.002,
+				"modelUsage": map[string]any{model: map[string]any{"inputTokens": 3, "cacheReadInputTokens": pre}}})
 		case m.Type == "user":
 			turn++
+			ctx := readCtx() + len(m.Message.Content)
+			writeCtx(ctx)
 			out.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": sessionID, "model": model})
+			out.Encode(map[string]any{"type": "assistant", "message": map[string]any{"model": model,
+				"usage": map[string]any{"input_tokens": 1, "cache_read_input_tokens": ctx - 1, "cache_creation_input_tokens": 0}}})
 			out.Encode(map[string]any{
 				"type": "result", "subtype": "success", "session_id": sessionID,
 				"result":         fmt.Sprintf("%s|turn=%d", m.Message.Content, turn),
@@ -85,6 +125,27 @@ type harness struct {
 	t        *testing.T
 	pool     *Pool
 	spawnLog string
+	clock    *fakeClock
+	dir      string
+}
+
+// fakeClock drives the pool's TTL and compaction clock; spares still age in
+// real time.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
 }
 
 func newHarness(t *testing.T, mutate func(*Config)) *harness {
@@ -109,11 +170,13 @@ func newHarness(t *testing.T, mutate func(*Config)) *harness {
 		TickInterval:   time.Hour, // tests call tick() themselves
 		RetryBackoff:   time.Hour,
 		Defaults:       []Profile{haiku},
+		CompactAfter:   55 * time.Minute,
+		CompactLatest:  59 * time.Minute,
 	}
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	h := &harness{t: t, pool: NewPool(cfg), spawnLog: spawnLog}
+	h := &harness{t: t, pool: NewPool(cfg), spawnLog: spawnLog, dir: dir}
 	t.Cleanup(h.pool.Close)
 	return h
 }
@@ -122,11 +185,64 @@ var haiku = Profile{Model: "haiku", Effort: "medium"}
 
 func (h *harness) ask(sessionID, prompt string, prof Profile) *AskResponse {
 	h.t.Helper()
-	r, err := h.pool.Ask(AskRequest{Prompt: prompt, SessionID: sessionID, Profile: prof})
+	return h.askReq(AskRequest{Prompt: prompt, SessionID: sessionID, Profile: prof})
+}
+
+func (h *harness) askReq(req AskRequest) *AskResponse {
+	h.t.Helper()
+	r, err := h.pool.Ask(req)
 	if err != nil {
 		h.t.Fatalf("ask: %v", err)
 	}
 	return r
+}
+
+// newClockedHarness is a harness whose pool reads a fake clock starting at
+// start, and which persists compactions to a state file.
+func newClockedHarness(t *testing.T, start time.Time, mutate func(*Config)) *harness {
+	t.Helper()
+	clock := &fakeClock{t: start}
+	stateDir := t.TempDir()
+	h := newHarness(t, func(c *Config) {
+		c.Now = clock.Now
+		c.StateFile = filepath.Join(stateDir, "compactions.json")
+		if mutate != nil {
+			mutate(c)
+		}
+	})
+	h.clock = clock
+	return h
+}
+
+func (h *harness) isLive(id string) bool {
+	h.pool.mu.Lock()
+	defer h.pool.mu.Unlock()
+	return h.pool.live[id] != nil
+}
+
+func (h *harness) pendingJob(id string) *compactJob {
+	h.pool.mu.Lock()
+	defer h.pool.mu.Unlock()
+	return h.pool.pending[id]
+}
+
+func (h *harness) compactionsRun() int {
+	n := 0
+	for _, l := range h.spawns() {
+		if strings.HasSuffix(l, " slash") {
+			n++
+		}
+	}
+	return n
+}
+
+func (h *harness) waitIdle(id string) {
+	h.t.Helper()
+	h.waitFor("compaction to finish", func() bool {
+		h.pool.mu.Lock()
+		defer h.pool.mu.Unlock()
+		return h.pool.running[id] == nil
+	})
 }
 
 func (h *harness) spawns() []string {

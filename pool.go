@@ -19,9 +19,11 @@ type Config struct {
 	// SpareTTL is how long a spare may wait before it is replaced, so that
 	// an updated Claude Code reaches the next caller without a restart.
 	SpareTTL time.Duration
-	// IdleTTL is how long a used session stays live after its last turn.
+	// IdleTTL is how long a used session stays live after its last turn,
+	// unless its last request asked for a different keep-alive.
 	IdleTTL time.Duration
-	// MaxLive caps how many used sessions are kept live at once.
+	// MaxLive caps how many used sessions are kept live at once. Prioritized
+	// sessions are never evicted to make room, so they can exceed it.
 	MaxLive int
 	// ProfileIdleTTL is how long a spare for a non-default profile is kept
 	// after the last request that asked for that profile.
@@ -35,7 +37,25 @@ type Config struct {
 	Defaults []Profile
 	// OnResult is called with every completed turn, for cost accounting.
 	OnResult func(*AskResponse, string)
+
+	// CompactAfter is how long after an --auto-compact turn its session is
+	// compacted: just inside the prompt cache's hour, so the compaction reads
+	// a warm cache.
+	CompactAfter time.Duration
+	// CompactLatest is the latest point after the last turn at which a due
+	// compaction still runs. Past it the cache may have expired, and
+	// compacting would pay for a cold read of the whole context.
+	CompactLatest time.Duration
+	// StateFile persists scheduled compactions across restarts; "" keeps
+	// them in memory only.
+	StateFile string
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
 }
+
+// MaxKeepAlive caps a request's keep-alive at the prompt cache's lifetime:
+// past it, a live process saves only Claude Code's startup.
+const MaxKeepAlive = time.Hour
 
 type AskRequest struct {
 	Prompt    string  `json:"prompt"`
@@ -43,6 +63,21 @@ type AskRequest struct {
 	Profile   Profile `json:"profile"`
 	// Tag names the caller in the usage log, e.g. "summary-chat".
 	Tag string `json:"tag,omitempty"`
+
+	// The options below apply to the session from this request until the
+	// next one, which replaces them; a request that leaves one out turns it off.
+
+	// KeepAlive keeps the session's process live this long after the turn,
+	// in place of IdleTTL. Zero means IdleTTL; capped at MaxKeepAlive.
+	KeepAlive time.Duration `json:"keep_alive,omitempty"`
+	// Priority exempts the session from eviction under MaxLive.
+	Priority bool `json:"priority,omitempty"`
+	// AutoCompact compacts the session CompactAfter after this turn, unless
+	// another request arrives first.
+	AutoCompact bool `json:"auto_compact,omitempty"`
+	// CompactAbove compacts the session right after this turn, in the
+	// background, if its context exceeds this many tokens. Zero is off.
+	CompactAbove int `json:"compact_above,omitempty"`
 }
 
 // Source says how the turn got its process, which is what decides latency.
@@ -67,6 +102,14 @@ type AskResponse struct {
 	DurationAPIMS int64           `json:"duration_api_ms"`
 	WallMS        int64           `json:"wall_ms"`
 	Usage         json.RawMessage `json:"usage,omitempty"`
+	// ContextTokens is the session's context size after the turn: the final
+	// API call's input, cache read and cache creation tokens.
+	ContextTokens int `json:"context_tokens"`
+	// Compaction reports a compaction of this session that finished since
+	// its previous turn, or failed.
+	Compaction *CompactionInfo `json:"compaction,omitempty"`
+	// NextCompaction is the compaction this turn scheduled or started.
+	NextCompaction *NextCompaction `json:"next_compaction,omitempty"`
 }
 
 var ErrBusy = errors.New("session already has a turn in progress")
@@ -85,6 +128,8 @@ type slot struct {
 type liveEntry struct {
 	proc     *Proc
 	lastUsed time.Time
+	ttl      time.Duration
+	priority bool
 }
 
 type Pool struct {
@@ -94,9 +139,22 @@ type Pool struct {
 	slots map[string]*slot
 	live  map[string]*liveEntry
 	// busy holds sessions with a turn in flight, live or not.
-	busy   map[string]bool
-	closed bool
-	stop   chan struct{}
+	busy map[string]bool
+	// pending holds scheduled compactions; running, compactions under way,
+	// which a request for the session waits out; compacted, finished ones
+	// not yet reported to a turn.
+	pending   map[string]*compactJob
+	running   map[string]*runningCompaction
+	compacted map[string]*CompactionInfo
+	closed    bool
+	stop      chan struct{}
+}
+
+func (p *Pool) now() time.Time {
+	if p.cfg.Now != nil {
+		return p.cfg.Now()
+	}
+	return time.Now()
 }
 
 func NewPool(cfg Config) *Pool {
@@ -105,7 +163,11 @@ func NewPool(cfg Config) *Pool {
 		slots: map[string]*slot{},
 		live:  map[string]*liveEntry{},
 		busy:  map[string]bool{},
-		stop:  make(chan struct{}),
+
+		pending:   map[string]*compactJob{},
+		running:   map[string]*runningCompaction{},
+		compacted: map[string]*CompactionInfo{},
+		stop:      make(chan struct{}),
 	}
 	p.mu.Lock()
 	for _, prof := range cfg.Defaults {
@@ -113,6 +175,7 @@ func NewPool(cfg Config) *Pool {
 		s.pinned = true
 		p.fillLocked(s)
 	}
+	p.restorePendingLocked()
 	p.mu.Unlock()
 	go p.loop()
 	return p
@@ -213,22 +276,31 @@ func (p *Pool) watchSpare(s *slot, proc *Proc) {
 
 func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 	start := time.Now()
+	if req.KeepAlive > MaxKeepAlive {
+		req.KeepAlive = MaxKeepAlive
+	}
 	var proc *Proc
 	var source Source
+	var waited time.Duration
 	var err error
 	if req.SessionID == "" {
 		proc, source, err = p.acquireNew(req.Profile)
 	} else {
-		proc, source, err = p.acquireExisting(req.SessionID, req.Profile)
+		proc, source, waited, err = p.acquireExisting(req.SessionID, req.Profile)
 	}
 	if err != nil {
 		return nil, err
 	}
 	sessionID := proc.SessionID
+	// finish releases the session itself on success, in the same critical
+	// section that may start a compaction, so no request slips in between.
+	released := false
 	defer func() {
-		p.mu.Lock()
-		delete(p.busy, sessionID)
-		p.mu.Unlock()
+		if !released {
+			p.mu.Lock()
+			delete(p.busy, sessionID)
+			p.mu.Unlock()
+		}
 	}()
 
 	if err := proc.WaitReady(p.cfg.StartTimeout); err != nil {
@@ -253,12 +325,13 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 			return nil, fmt.Errorf("session %s (%s): starting claude: %w", sessionID, source, err)
 		}
 	}
+	turnStart := p.now()
 	tr, err := proc.Turn(req.Prompt, p.cfg.TurnTimeout)
 	if err != nil {
 		proc.Kill()
 		return nil, fmt.Errorf("session %s (%s): %w", sessionID, source, err)
 	}
-	resp := &AskResponse{Source: source, Model: tr.Model, WallMS: time.Since(start).Milliseconds()}
+	resp := &AskResponse{Source: source, Model: tr.Model, WallMS: time.Since(start).Milliseconds(), ContextTokens: tr.ContextTokens}
 	var r struct {
 		SessionID     string          `json:"session_id"`
 		Result        string          `json:"result"`
@@ -280,7 +353,20 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 	resp.Result, resp.IsError, resp.Subtype = r.Result, r.IsError, r.Subtype
 	resp.TotalCostUSD, resp.DurationMS, resp.DurationAPIMS, resp.Usage = r.TotalCostUSD, r.DurationMS, r.DurationAPIMS, r.Usage
 
-	p.keepLive(proc, resp.SessionID)
+	p.mu.Lock()
+	p.keepLiveLocked(proc, resp.SessionID, req)
+	if info := p.compacted[resp.SessionID]; info != nil {
+		delete(p.compacted, resp.SessionID)
+		info.CompactedBeforeMS = turnStart.Sub(info.finished).Milliseconds()
+		info.WaitedMS = waited.Milliseconds()
+		resp.Compaction = info
+	}
+	resp.NextCompaction = p.afterTurnLocked(resp.SessionID, proc, req, tr.ContextTokens)
+	delete(p.busy, sessionID)
+	delete(p.busy, resp.SessionID)
+	released = true
+	p.mu.Unlock()
+
 	if p.cfg.OnResult != nil {
 		p.cfg.OnResult(resp, req.Tag)
 	}
@@ -319,15 +405,29 @@ func (p *Pool) acquireNew(prof Profile) (*Proc, Source, error) {
 	return proc, SourceCold, nil
 }
 
-func (p *Pool) acquireExisting(sessionID string, prof Profile) (*Proc, Source, error) {
+// acquireExisting waits out a compaction of the session, if one is running,
+// and reports how long it waited.
+func (p *Pool) acquireExisting(sessionID string, prof Profile) (*Proc, Source, time.Duration, error) {
+	var waited time.Duration
 	p.mu.Lock()
-	if p.closed {
+	for {
+		if p.closed {
+			p.mu.Unlock()
+			return nil, "", waited, errors.New("daemon is shutting down")
+		}
+		rc := p.running[sessionID]
+		if rc == nil {
+			break
+		}
 		p.mu.Unlock()
-		return nil, "", errors.New("daemon is shutting down")
+		t0 := time.Now()
+		<-rc.done
+		waited += time.Since(t0)
+		p.mu.Lock()
 	}
 	if p.busy[sessionID] {
 		p.mu.Unlock()
-		return nil, "", ErrBusy
+		return nil, "", waited, ErrBusy
 	}
 	p.busy[sessionID] = true
 	e := p.live[sessionID]
@@ -341,10 +441,10 @@ func (p *Pool) acquireExisting(sessionID string, prof Profile) (*Proc, Source, e
 		// prompt is ignored: Claude Code keeps the one the session began with.
 		if proc.Profile.Effort == prof.Effort && proc.Profile.NoThinking == prof.NoThinking {
 			if prof.Model == "" || proc.Profile.Model == prof.Model {
-				return proc, SourceLive, nil
+				return proc, SourceLive, waited, nil
 			}
 			if err := proc.SetModel(prof.Model, p.cfg.StartTimeout); err == nil {
-				return proc, SourceLive, nil
+				return proc, SourceLive, waited, nil
 			}
 		}
 		proc.Kill()
@@ -354,27 +454,38 @@ func (p *Pool) acquireExisting(sessionID string, prof Profile) (*Proc, Source, e
 		p.mu.Lock()
 		delete(p.busy, sessionID)
 		p.mu.Unlock()
-		return nil, "", err
+		return nil, "", waited, err
 	}
-	return proc, SourceResume, nil
+	return proc, SourceResume, waited, nil
 }
 
-func (p *Pool) keepLive(proc *Proc, sessionID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *Pool) keepLiveLocked(proc *Proc, sessionID string, req AskRequest) {
 	if p.closed || !proc.Alive() {
 		proc.Kill()
 		return
 	}
+	ttl := req.KeepAlive
+	if ttl <= 0 {
+		ttl = p.cfg.IdleTTL
+	}
 	proc.SessionID = sessionID
-	p.live[sessionID] = &liveEntry{proc: proc, lastUsed: time.Now()}
+	p.live[sessionID] = &liveEntry{proc: proc, lastUsed: p.now(), ttl: ttl, priority: req.Priority}
+	p.evictLocked()
+}
+
+// evictLocked shuts down the least recently used sessions until MaxLive is
+// met, never a prioritized one: if only those are left, the cap gives way.
+func (p *Pool) evictLocked() {
 	for len(p.live) > p.cfg.MaxLive {
 		var oldestID string
 		var oldest time.Time
 		for id, e := range p.live {
-			if oldestID == "" || e.lastUsed.Before(oldest) {
+			if !e.priority && (oldestID == "" || e.lastUsed.Before(oldest)) {
 				oldestID, oldest = id, e.lastUsed
 			}
+		}
+		if oldestID == "" {
+			return
 		}
 		p.live[oldestID].proc.Kill()
 		delete(p.live, oldestID)
@@ -401,6 +512,7 @@ func (p *Pool) tick() {
 		return
 	}
 	now := time.Now()
+	clock := p.now()
 	for k, s := range p.slots {
 		if !s.pinned && now.Sub(s.lastRequested) > p.cfg.ProfileIdleTTL {
 			for _, proc := range []*Proc{s.current, s.replacing} {
@@ -423,11 +535,12 @@ func (p *Pool) tick() {
 		}
 	}
 	for id, e := range p.live {
-		if !e.proc.Alive() || now.Sub(e.lastUsed) > p.cfg.IdleTTL {
+		if !e.proc.Alive() || clock.Sub(e.lastUsed) > e.ttl {
 			e.proc.Kill()
 			delete(p.live, id)
 		}
 	}
+	p.runDueCompactionsLocked(clock)
 }
 
 func (p *Pool) Close() {
@@ -448,6 +561,9 @@ func (p *Pool) Close() {
 	for _, e := range p.live {
 		e.proc.Kill()
 	}
+	for _, rc := range p.running {
+		rc.kill()
+	}
 }
 
 type SpareStatus struct {
@@ -459,22 +575,26 @@ type SpareStatus struct {
 }
 
 type LiveStatus struct {
-	SessionID string  `json:"session_id"`
-	Profile   Profile `json:"profile"`
-	IdleS     int64   `json:"idle_s"`
+	SessionID  string  `json:"session_id"`
+	Profile    Profile `json:"profile"`
+	IdleS      int64   `json:"idle_s"`
+	KeepAliveS int64   `json:"keep_alive_s"`
+	Priority   bool    `json:"priority,omitempty"`
 }
 
 type Status struct {
-	Spares []SpareStatus `json:"spares"`
-	Live   []LiveStatus  `json:"live"`
-	Busy   []string      `json:"busy"`
+	Spares      []SpareStatus      `json:"spares"`
+	Live        []LiveStatus       `json:"live"`
+	Busy        []string           `json:"busy"`
+	Compactions []CompactionStatus `json:"compactions"`
 }
 
 func (p *Pool) Status() Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	st := Status{Spares: []SpareStatus{}, Live: []LiveStatus{}, Busy: []string{}}
+	clock := p.now()
+	st := Status{Spares: []SpareStatus{}, Live: []LiveStatus{}, Busy: []string{}, Compactions: p.compactionStatusLocked(clock)}
 	for _, s := range p.slots {
 		ss := SpareStatus{Profile: s.profile, Pinned: s.pinned, Replacing: s.replacing != nil}
 		if s.current != nil {
@@ -484,7 +604,10 @@ func (p *Pool) Status() Status {
 		st.Spares = append(st.Spares, ss)
 	}
 	for id, e := range p.live {
-		st.Live = append(st.Live, LiveStatus{SessionID: id, Profile: e.proc.Profile, IdleS: int64(now.Sub(e.lastUsed).Seconds())})
+		st.Live = append(st.Live, LiveStatus{
+			SessionID: id, Profile: e.proc.Profile, IdleS: int64(clock.Sub(e.lastUsed).Seconds()),
+			KeepAliveS: int64(e.ttl.Seconds()), Priority: e.priority,
+		})
 	}
 	for id := range p.busy {
 		st.Busy = append(st.Busy, id)

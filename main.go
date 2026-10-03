@@ -31,7 +31,7 @@ const (
 )
 
 type paths struct {
-	home, socket, work, log, usage string
+	home, socket, work, log, usage, compactions string
 }
 
 func resolvePaths() paths {
@@ -46,6 +46,8 @@ func resolvePaths() paths {
 		work:   filepath.Join(home, "work"),
 		log:    filepath.Join(home, "daemon.log"),
 		usage:  filepath.Join(home, "usage.jsonl"),
+
+		compactions: filepath.Join(home, "compactions.json"),
 	}
 }
 
@@ -83,6 +85,14 @@ func usage() {
       --system-file <f>    system prompt for a new session (default empty)
       --no-thinking        disable extended thinking (MAX_THINKING_TOKENS=0)
       --tag <name>         caller name recorded in the usage log
+      --keep-alive <dur>   keep the session's process live this long after
+                           the turn, instead of 15m (max 60m)
+      --priority           never evict this session to make room for others
+      --auto-compact       compact the session 55m after this turn, while its
+                           prompt cache is still warm, unless asked again first
+      --compact-above <n>  compact right after this turn if its context
+                           exceeds n tokens
+    These four apply until the session's next request, which replaces them.
   claude-print-daemon status                      spares, live sessions, cost totals
   claude-print-daemon serve                       run the daemon in the foreground
   claude-print-daemon stop                        shut the daemon down
@@ -101,6 +111,11 @@ type askBody struct {
 	SystemPrompt string `json:"system_prompt,omitempty"`
 	NoThinking   bool   `json:"no_thinking,omitempty"`
 	Tag          string `json:"tag,omitempty"`
+	// KeepAlive is a Go duration, e.g. "60m"; capped at an hour.
+	KeepAlive    string `json:"keep_alive,omitempty"`
+	Priority     bool   `json:"priority,omitempty"`
+	AutoCompact  bool   `json:"auto_compact,omitempty"`
+	CompactAbove int    `json:"compact_above,omitempty"`
 }
 
 func serve(args []string) error {
@@ -142,6 +157,19 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("finding claude: %w", err)
 	}
+	// Overridable so the cache-warmth rule can be exercised without waiting
+	// an hour; not meant for production use.
+	compactAfter, err := envDuration("CPD_COMPACT_AFTER", 55*time.Minute)
+	if err != nil {
+		return err
+	}
+	compactLatest, err := envDuration("CPD_COMPACT_LATEST", compactAfter+4*time.Minute)
+	if err != nil {
+		return err
+	}
+	if compactLatest <= compactAfter {
+		return errors.New("CPD_COMPACT_LATEST must be later than CPD_COMPACT_AFTER")
+	}
 	ul := &usageLog{path: pt.usage}
 	pool := NewPool(Config{
 		ClaudeBin:      bin,
@@ -160,7 +188,10 @@ func serve(args []string) error {
 			{Model: "haiku", Effort: defaultEffort, NoThinking: true},
 			{Model: "sonnet", Effort: defaultEffort},
 		},
-		OnResult: ul.append,
+		OnResult:      ul.append,
+		CompactAfter:  compactAfter,
+		CompactLatest: compactLatest,
+		StateFile:     pt.compactions,
 	})
 	log.Printf("listening on %s (claude: %s)", pt.socket, bin)
 
@@ -204,13 +235,31 @@ func handler(pool *Pool, ul *usageLog) http.Handler {
 		if b.Effort == "" {
 			b.Effort = defaultEffort
 		}
+		var keepAlive time.Duration
+		if b.KeepAlive != "" {
+			d, err := time.ParseDuration(b.KeepAlive)
+			if err != nil || d < 0 {
+				httpError(w, http.StatusBadRequest, fmt.Errorf("keep_alive %q is not a duration", b.KeepAlive))
+				return
+			}
+			keepAlive = min(d, MaxKeepAlive)
+		}
+		if b.CompactAbove < 0 {
+			httpError(w, http.StatusBadRequest, errors.New("compact_above is negative"))
+			return
+		}
 		started := time.Now()
-		log.Printf("ask tag=%s session=%s model=%s no_thinking=%v prompt=%d chars", orNone(b.Tag), orNone(b.SessionID), b.Model, b.NoThinking, len(b.Prompt))
+		log.Printf("ask tag=%s session=%s model=%s no_thinking=%v prompt=%d chars keep_alive=%s priority=%v auto_compact=%v compact_above=%d",
+			orNone(b.Tag), orNone(b.SessionID), b.Model, b.NoThinking, len(b.Prompt), keepAlive, b.Priority, b.AutoCompact, b.CompactAbove)
 		resp, err := pool.Ask(AskRequest{
-			Prompt:    b.Prompt,
-			SessionID: b.SessionID,
-			Tag:       b.Tag,
-			Profile:   Profile{Model: b.Model, Effort: b.Effort, SystemPrompt: b.SystemPrompt, NoThinking: b.NoThinking},
+			Prompt:       b.Prompt,
+			SessionID:    b.SessionID,
+			Tag:          b.Tag,
+			Profile:      Profile{Model: b.Model, Effort: b.Effort, SystemPrompt: b.SystemPrompt, NoThinking: b.NoThinking},
+			KeepAlive:    keepAlive,
+			Priority:     b.Priority,
+			AutoCompact:  b.AutoCompact,
+			CompactAbove: b.CompactAbove,
 		})
 		if err != nil {
 			log.Printf("ask tag=%s FAILED after %dms: %v", orNone(b.Tag), time.Since(started).Milliseconds(), err)
@@ -222,8 +271,8 @@ func handler(pool *Pool, ul *usageLog) http.Handler {
 			httpError(w, code, err)
 			return
 		}
-		log.Printf("ask tag=%s done: session=%s source=%s model=%s wall=%dms cost=$%.4f is_error=%v",
-			orNone(b.Tag), resp.SessionID, resp.Source, resp.Model, resp.WallMS, resp.TotalCostUSD, resp.IsError)
+		log.Printf("ask tag=%s done: session=%s source=%s model=%s wall=%dms cost=$%.4f is_error=%v context=%d",
+			orNone(b.Tag), resp.SessionID, resp.Source, resp.Model, resp.WallMS, resp.TotalCostUSD, resp.IsError, resp.ContextTokens)
 		if resp.IsError {
 			log.Printf("ask tag=%s claude reported an error (%s): %s", orNone(b.Tag), resp.Subtype, resp.Result)
 		}
@@ -343,6 +392,18 @@ func orNone(s string) string {
 	return s
 }
 
+func envDuration(k string, def time.Duration) (time.Duration, error) {
+	v := os.Getenv(k)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s=%q is not a positive duration", k, v)
+	}
+	return d, nil
+}
+
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -405,6 +466,10 @@ func ask(args []string) error {
 	systemFile := fs.String("system-file", "", "system prompt file")
 	noThinking := fs.Bool("no-thinking", false, "disable extended thinking")
 	tag := fs.String("tag", "", "caller name for the usage log")
+	keepAlive := fs.Duration("keep-alive", 0, "keep the session live this long after the turn (max 60m)")
+	priority := fs.Bool("priority", false, "exempt the session from eviction")
+	autoCompact := fs.Bool("auto-compact", false, "compact the session before its prompt cache expires")
+	compactAbove := fs.Int("compact-above", 0, "compact right after the turn if the context exceeds this many tokens")
 	_ = fs.Parse(args)
 
 	var prompt []byte
@@ -417,7 +482,13 @@ func ask(args []string) error {
 	if err != nil {
 		return err
 	}
-	body := askBody{Prompt: string(prompt), SessionID: *session, Model: *model, Effort: *effort, NoThinking: *noThinking, Tag: *tag}
+	body := askBody{
+		Prompt: string(prompt), SessionID: *session, Model: *model, Effort: *effort, NoThinking: *noThinking, Tag: *tag,
+		Priority: *priority, AutoCompact: *autoCompact, CompactAbove: *compactAbove,
+	}
+	if *keepAlive != 0 {
+		body.KeepAlive = keepAlive.String()
+	}
 	if *systemFile != "" {
 		sp, err := os.ReadFile(*systemFile)
 		if err != nil {

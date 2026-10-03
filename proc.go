@@ -56,6 +56,10 @@ type spawnOpts struct {
 	Profile   Profile
 	SessionID string
 	Resume    bool
+	// SlashCommands leaves out --disable-slash-commands. Only compaction runs
+	// set it: /compact is refused under that flag, and a process that takes
+	// prompts from callers must not read one starting with "/" as a command.
+	SlashCommands bool
 }
 
 const initRequestID = "cpd-init"
@@ -112,7 +116,11 @@ func spawn(o spawnOpts) (*Proc, error) {
 		"--tools", "",
 		"--strict-mcp-config",
 		"--setting-sources", "",
-		"--disable-slash-commands",
+	)
+	if !o.SlashCommands {
+		args = append(args, "--disable-slash-commands")
+	}
+	args = append(args,
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
@@ -292,10 +300,24 @@ func (p *Proc) SetModel(model string, timeout time.Duration) error {
 }
 
 // TurnResult is the `result` message Claude Code emits at the end of a turn,
-// plus the model it reported in system/init.
+// plus what the stream said along the way.
 type TurnResult struct {
 	Raw   json.RawMessage
 	Model string
+	// ContextTokens is the final API call's input, cache read and cache
+	// creation tokens: the size of the context the turn ended on. Zero when
+	// the turn made no API call.
+	ContextTokens int
+	// Compact is set when the turn compacted the session.
+	Compact *CompactBoundary
+}
+
+// CompactBoundary is the compact_metadata of a system/compact_boundary message.
+type CompactBoundary struct {
+	Trigger    string `json:"trigger"`
+	PreTokens  int    `json:"pre_tokens"`
+	PostTokens int    `json:"post_tokens"`
+	DurationMS int64  `json:"duration_ms"`
 }
 
 // Turn sends one user message and waits for the turn's result.
@@ -307,6 +329,7 @@ func (p *Proc) Turn(prompt string, timeout time.Duration) (*TurnResult, error) {
 		return nil, fmt.Errorf("writing prompt: %w", err)
 	}
 	deadline := time.After(timeout)
+	tr := &TurnResult{}
 	for {
 		select {
 		case line, ok := <-p.lines:
@@ -317,6 +340,15 @@ func (p *Proc) Turn(prompt string, timeout time.Duration) (*TurnResult, error) {
 				Type    string `json:"type"`
 				Subtype string `json:"subtype"`
 				Model   string `json:"model"`
+				Message struct {
+					Model string `json:"model"`
+					Usage *struct {
+						Input         int `json:"input_tokens"`
+						CacheRead     int `json:"cache_read_input_tokens"`
+						CacheCreation int `json:"cache_creation_input_tokens"`
+					} `json:"usage"`
+				} `json:"message"`
+				CompactMetadata *CompactBoundary `json:"compact_metadata"`
 			}
 			if json.Unmarshal(line, &m) != nil {
 				continue
@@ -324,8 +356,15 @@ func (p *Proc) Turn(prompt string, timeout time.Duration) (*TurnResult, error) {
 			switch {
 			case m.Type == "system" && m.Subtype == "init":
 				p.model = m.Model
+			case m.Type == "system" && m.Subtype == "compact_boundary" && m.CompactMetadata != nil:
+				tr.Compact = m.CompactMetadata
+			case m.Type == "assistant" && m.Message.Usage != nil && m.Message.Model != "<synthetic>":
+				// Each API call reports its own usage; the last one wins.
+				u := m.Message.Usage
+				tr.ContextTokens = u.Input + u.CacheRead + u.CacheCreation
 			case m.Type == "result":
-				return &TurnResult{Raw: line, Model: p.model}, nil
+				tr.Raw, tr.Model = line, p.model
+				return tr, nil
 			}
 		case <-deadline:
 			return nil, errors.New("timed out waiting for claude's reply")
