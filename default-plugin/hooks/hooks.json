@@ -31,11 +31,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/bash-cd.ts",
-            "timeout": 10
-          },
-          {
-            "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash/bash-find.ts",
             "timeout": 10
           },
