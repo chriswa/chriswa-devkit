@@ -8,7 +8,6 @@ the unmodified Claude Code binary signed in with your own subscription.
 go build -o claude-print-daemon .
 echo "Name a colour." | ./claude-print-daemon ask --tag me --no-thinking
 ./claude-print-daemon ask -s <session_id> prompt.txt   # continue that session
-./claude-print-daemon ask --fork <id> --cwd <dir>       # ask a fork of any session (stdin prompt)
 ./claude-print-daemon status                           # spares, live sessions, cost by tag
 ```
 
@@ -41,19 +40,13 @@ Prompts are read from a file or stdin, never from the command line.
   different effort or thinking setting restarts the process with `--resume`.
   The system prompt can't be changed once a session has started.
 - One turn at a time per session: a second request for a busy session gets 409.
-- `--fork <id> --cwd <dir>` runs `claude --resume <id> --fork-session` in
-  `<dir>`, the directory the source session ran in. The response's
-  `session_id` is the new fork (`source: "fork"`, `forked_from: <id>`); the
-  source transcript is only read. A fork never takes a spare. Continue it with
-  `-s`; its directory is kept in `forks.jsonl` so that works after a restart.
 
 ## Files (`~/.claude-print-daemon`, or `$CPD_HOME`)
 
 - `daemon.sock` — HTTP over a Unix socket: `POST /v1/ask`, `GET /v1/status`, `POST /v1/stop`
 - `usage.jsonl` — one line per turn: tag, session, model, `total_cost_usd`, token usage
 - `daemon.log` — output from a daemon started by `ask`
-- `forks.jsonl` — each fork's working directory, for resuming it
-- `work/` — the working directory of every claude process but a fork. Transcripts land in
+- `work/` — the working directory of every claude process. Transcripts land in
   `~/.claude/projects/` under this directory's name, which is how `--resume`
   finds them.
 
@@ -61,9 +54,8 @@ Prompts are read from a file or stdin, never from the command line.
 
 ```json
 {"prompt": "…", "session_id": "optional", "model": "haiku", "effort": "medium",
- "system_prompt": "", "no_thinking": false, "tag": "summary-chat",
- "fork_from": "optional", "cwd": "required with fork_from"}
+ "system_prompt": "", "no_thinking": false, "tag": "summary-chat"}
 ```
 
 The response includes `session_id`, `result`, `source` (`spare`, `live`,
-`cold`, `resume` or `fork`), `forked_from` (forks only), `model`, `total_cost_usd`, `usage` and `wall_ms`.
+`cold` or `resume`), `model`, `total_cost_usd`, `usage` and `wall_ms`.

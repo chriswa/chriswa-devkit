@@ -56,10 +56,6 @@ type spawnOpts struct {
 	Profile   Profile
 	SessionID string
 	Resume    bool
-	// ForkFrom, when set, starts SessionID as a fork of this session: Claude
-	// Code copies its history into a new transcript and never writes to the
-	// source's. The source must have been filed under Dir.
-	ForkFrom string
 }
 
 const initRequestID = "cpd-init"
@@ -100,11 +96,7 @@ func scrubbedEnv(env []string) []string {
 
 func spawn(o spawnOpts) (*Proc, error) {
 	args := []string{"-p"}
-	if o.ForkFrom != "" {
-		// --session-id names the fork up front, so the pool can track it
-		// before the first turn reports it.
-		args = append(args, "--resume", o.ForkFrom, "--fork-session", "--session-id", o.SessionID)
-	} else if o.Resume {
+	if o.Resume {
 		args = append(args, "--resume", o.SessionID)
 	} else {
 		args = append(args, "--session-id", o.SessionID)

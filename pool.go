@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -16,14 +13,9 @@ import (
 
 type Config struct {
 	ClaudeBin string
-	// Dir is the working directory every claude process runs in, except a
-	// fork's. Claude Code files transcripts by cwd, so --resume only finds
-	// sessions started here.
+	// Dir is the working directory every claude process runs in. Claude Code
+	// files transcripts by cwd, so --resume only finds sessions started here.
 	Dir string
-	// ForkLog records the working directory of every fork, so that a fork can
-	// be resumed where its transcript was filed after the daemon restarts.
-	// Empty keeps that only in memory.
-	ForkLog string
 	// SpareTTL is how long a spare may wait before it is replaced, so that
 	// an updated Claude Code reaches the next caller without a restart.
 	SpareTTL time.Duration
@@ -51,11 +43,6 @@ type AskRequest struct {
 	Profile   Profile `json:"profile"`
 	// Tag names the caller in the usage log, e.g. "summary-chat".
 	Tag string `json:"tag,omitempty"`
-	// ForkFrom starts a new session as a fork of this one, which may be any
-	// Claude Code session, not only the daemon's. Its transcript is copied,
-	// never written to. Dir must be the directory it was filed under.
-	ForkFrom string `json:"fork_from,omitempty"`
-	Dir      string `json:"dir,omitempty"`
 }
 
 // Source says how the turn got its process, which is what decides latency.
@@ -66,14 +53,11 @@ const (
 	SourceLive   Source = "live"   // the session's own process, kept from its last turn
 	SourceCold   Source = "cold"   // a new session that found no spare
 	SourceResume Source = "resume" // an existing session whose process had been shut down
-	SourceFork   Source = "fork"   // a new session forked from another, which no spare can serve
 )
 
 type AskResponse struct {
-	SessionID string `json:"session_id"`
-	Source    Source `json:"source"`
-	// ForkedFrom is the source session when this turn created a fork.
-	ForkedFrom    string          `json:"forked_from,omitempty"`
+	SessionID     string          `json:"session_id"`
+	Source        Source          `json:"source"`
 	Model         string          `json:"model"`
 	Result        string          `json:"result"`
 	IsError       bool            `json:"is_error"`
@@ -110,22 +94,18 @@ type Pool struct {
 	slots map[string]*slot
 	live  map[string]*liveEntry
 	// busy holds sessions with a turn in flight, live or not.
-	busy map[string]bool
-	// forkDirs is the working directory of every fork, loaded from and
-	// appended to cfg.ForkLog.
-	forkDirs map[string]string
-	closed   bool
-	stop     chan struct{}
+	busy   map[string]bool
+	closed bool
+	stop   chan struct{}
 }
 
 func NewPool(cfg Config) *Pool {
 	p := &Pool{
-		cfg:      cfg,
-		slots:    map[string]*slot{},
-		live:     map[string]*liveEntry{},
-		busy:     map[string]bool{},
-		forkDirs: loadForkLog(cfg.ForkLog),
-		stop:     make(chan struct{}),
+		cfg:   cfg,
+		slots: map[string]*slot{},
+		live:  map[string]*liveEntry{},
+		busy:  map[string]bool{},
+		stop:  make(chan struct{}),
 	}
 	p.mu.Lock()
 	for _, prof := range cfg.Defaults {
@@ -146,8 +126,6 @@ func newSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// spawn starts a process in the daemon's own working directory, which is
-// where every session but a fork lives.
 func (p *Pool) spawn(prof Profile, sessionID string, resume bool) (*Proc, error) {
 	return spawn(spawnOpts{
 		ClaudeBin: p.cfg.ClaudeBin,
@@ -238,15 +216,9 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 	var proc *Proc
 	var source Source
 	var err error
-	switch {
-	case req.ForkFrom != "":
-		if req.SessionID != "" {
-			return nil, errors.New("a fork starts a new session; it cannot also continue one")
-		}
-		proc, source, err = p.acquireFork(req.ForkFrom, req.Dir, req.Profile)
-	case req.SessionID == "":
+	if req.SessionID == "" {
 		proc, source, err = p.acquireNew(req.Profile)
-	default:
+	} else {
 		proc, source, err = p.acquireExisting(req.SessionID, req.Profile)
 	}
 	if err != nil {
@@ -308,10 +280,6 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 	resp.Result, resp.IsError, resp.Subtype = r.Result, r.IsError, r.Subtype
 	resp.TotalCostUSD, resp.DurationMS, resp.DurationAPIMS, resp.Usage = r.TotalCostUSD, r.DurationMS, r.DurationAPIMS, r.Usage
 
-	if source == SourceFork {
-		resp.ForkedFrom = req.ForkFrom
-		p.recordFork(resp.SessionID, req.Dir, req.ForkFrom)
-	}
 	p.keepLive(proc, resp.SessionID)
 	if p.cfg.OnResult != nil {
 		p.cfg.OnResult(resp, req.Tag)
@@ -381,13 +349,7 @@ func (p *Pool) acquireExisting(sessionID string, prof Profile) (*Proc, Source, e
 		}
 		proc.Kill()
 	}
-	proc, err := spawn(spawnOpts{
-		ClaudeBin: p.cfg.ClaudeBin,
-		Dir:       p.dirFor(sessionID),
-		Profile:   prof,
-		SessionID: sessionID,
-		Resume:    true,
-	})
+	proc, err := p.spawn(prof, sessionID, true)
 	if err != nil {
 		p.mu.Lock()
 		delete(p.busy, sessionID)
@@ -395,99 +357,6 @@ func (p *Pool) acquireExisting(sessionID string, prof Profile) (*Proc, Source, e
 		return nil, "", err
 	}
 	return proc, SourceResume, nil
-}
-
-// acquireFork starts a fork of source in dir. It never takes a spare: a
-// spare has already started its own session in the daemon's directory, and
-// which session a process holds is fixed when it starts.
-func (p *Pool) acquireFork(source, dir string, prof Profile) (*Proc, Source, error) {
-	if !filepath.IsAbs(dir) {
-		return nil, "", fmt.Errorf("forking %s: the source's working directory must be an absolute path, got %q", source, dir)
-	}
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return nil, "", fmt.Errorf("forking %s: %s is not a directory", source, dir)
-	}
-	id := newSessionID()
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil, "", errors.New("daemon is shutting down")
-	}
-	p.busy[id] = true
-	p.mu.Unlock()
-	proc, err := spawn(spawnOpts{
-		ClaudeBin: p.cfg.ClaudeBin,
-		Dir:       dir,
-		Profile:   prof,
-		SessionID: id,
-		ForkFrom:  source,
-	})
-	if err != nil {
-		p.mu.Lock()
-		delete(p.busy, id)
-		p.mu.Unlock()
-		return nil, "", err
-	}
-	return proc, SourceFork, nil
-}
-
-// dirFor is the working directory a session's transcript was filed under.
-func (p *Pool) dirFor(sessionID string) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if d, ok := p.forkDirs[sessionID]; ok {
-		return d
-	}
-	return p.cfg.Dir
-}
-
-type forkRecord struct {
-	Time       time.Time `json:"time"`
-	SessionID  string    `json:"session_id"`
-	Dir        string    `json:"dir"`
-	ForkedFrom string    `json:"forked_from"`
-}
-
-func (p *Pool) recordFork(sessionID, dir, source string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.forkDirs[sessionID] = dir
-	if p.cfg.ForkLog == "" {
-		return
-	}
-	b, _ := json.Marshal(forkRecord{Time: time.Now(), SessionID: sessionID, Dir: dir, ForkedFrom: source})
-	f, err := os.OpenFile(p.cfg.ForkLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		log.Printf("fork log: %v", err)
-		return
-	}
-	defer f.Close()
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		log.Printf("fork log: %v", err)
-	}
-}
-
-func loadForkLog(path string) map[string]string {
-	dirs := map[string]string{}
-	if path == "" {
-		return dirs
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("fork log: %v", err)
-		}
-		return dirs
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var r forkRecord
-		if json.Unmarshal(sc.Bytes(), &r) == nil && r.SessionID != "" && r.Dir != "" {
-			dirs[r.SessionID] = r.Dir
-		}
-	}
-	return dirs
 }
 
 func (p *Pool) keepLive(proc *Proc, sessionID string) {
