@@ -57,8 +57,7 @@ chriswa-devkit/
 │   └── scripts/              # Utility scripts
 │       └── capture-session-id.sh
 ├── claude/                   # Claude Code utilities (not plugin)
-│   ├── statusline/
-│   └── tools/
+│   └── statusline/
 ├── shell/                    # Shell customization
 │   ├── index.sh
 │   ├── aliases.sh
@@ -66,8 +65,7 @@ chriswa-devkit/
 │   ├── path.sh
 │   └── killport.sh
 ├── bin/                      # Executable wrappers
-│   ├── chriswa-devkit-install
-│   └── claude-session-search
+│   └── chriswa-devkit-install
 └── install/                  # Installation scripts
     ├── index.ts
     ├── shell.ts
@@ -92,7 +90,6 @@ chriswa-devkit/
 
 ### Claude Code Tools
 
-- **Session Search**: Search through all Claude Code sessions with filters
 - **Custom Statusline**: Shows directory, git branch, model, cost, tokens, and session ID
 
 ## Technology
