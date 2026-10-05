@@ -72,7 +72,15 @@ by `serve`) override the 55m and 59m for testing.
   lets Haiku think, which adds about 0.4 s to a short reply.
 - Continuing a session with a different model switches it in place. A
   different effort or thinking setting restarts the process with `--resume`.
-  The system prompt can't be changed once a session has started.
+  The system prompt can't be changed once a session has started: Claude Code
+  stores it with the transcript, and a resumed process ignores
+  `--system-prompt` and `--append-system-prompt` (checked on 2.1.289). So a
+  request that brings a different one to an existing session is refused with
+  422, and a `REFUSED` line in `daemon.log`, rather than answered under the
+  old instructions. Leave the system prompt out to continue a session as it
+  is; start a new session for new instructions. Each session's prompt hash is
+  kept in `session-prompts.json` for 30 days after its last request; a
+  session older than that, or started before this was kept, cannot be checked.
 - One turn at a time per session: a second request for a busy session gets 409.
 
 ## Files (`~/.claude-print-daemon`, or `$CPD_HOME`)
@@ -80,6 +88,7 @@ by `serve`) override the 55m and 59m for testing.
 - `daemon.sock` — HTTP over a Unix socket: `POST /v1/ask`, `GET /v1/status`, `POST /v1/stop`
 - `usage.jsonl` — one line per turn: tag, session, model, `total_cost_usd`, token usage
 - `compactions.json` — scheduled `--auto-compact` compactions
+- `session-prompts.json` — each session's system prompt hash, for the check above
 - `daemon.log` — output from a daemon started by `ask`
 - `work/` — the working directory of every claude process. Transcripts land in
   `~/.claude/projects/` under this directory's name, which is how `--resume`

@@ -49,6 +49,10 @@ type Config struct {
 	// StateFile persists scheduled compactions across restarts; "" keeps
 	// them in memory only.
 	StateFile string
+	// PromptsFile persists each session's system prompt hash across
+	// restarts, so a different one is refused (see prompts.go); "" keeps
+	// them in memory only.
+	PromptsFile string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -146,8 +150,10 @@ type Pool struct {
 	pending   map[string]*compactJob
 	running   map[string]*runningCompaction
 	compacted map[string]*CompactionInfo
-	closed    bool
-	stop      chan struct{}
+	// prompts holds the system prompt each session started with: see prompts.go.
+	prompts map[string]*sessionPrompt
+	closed  bool
+	stop    chan struct{}
 }
 
 func (p *Pool) now() time.Time {
@@ -167,6 +173,7 @@ func NewPool(cfg Config) *Pool {
 		pending:   map[string]*compactJob{},
 		running:   map[string]*runningCompaction{},
 		compacted: map[string]*CompactionInfo{},
+		prompts:   map[string]*sessionPrompt{},
 		stop:      make(chan struct{}),
 	}
 	p.mu.Lock()
@@ -176,6 +183,7 @@ func NewPool(cfg Config) *Pool {
 		p.fillLocked(s)
 	}
 	p.restorePendingLocked()
+	p.restorePromptsLocked()
 	p.mu.Unlock()
 	go p.loop()
 	return p
@@ -286,6 +294,12 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 	if req.SessionID == "" {
 		proc, source, err = p.acquireNew(req.Profile)
 	} else {
+		p.mu.Lock()
+		err = p.checkPromptLocked(req.SessionID, req.Profile.SystemPrompt)
+		p.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		proc, source, waited, err = p.acquireExisting(req.SessionID, req.Profile)
 	}
 	if err != nil {
@@ -354,6 +368,7 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 	resp.TotalCostUSD, resp.DurationMS, resp.DurationAPIMS, resp.Usage = r.TotalCostUSD, r.DurationMS, r.DurationAPIMS, r.Usage
 
 	p.mu.Lock()
+	p.rememberPromptLocked(resp.SessionID, req.SessionID == "", req.Profile.SystemPrompt)
 	p.keepLiveLocked(proc, resp.SessionID, req)
 	if info := p.compacted[resp.SessionID]; info != nil {
 		delete(p.compacted, resp.SessionID)
@@ -438,7 +453,7 @@ func (p *Pool) acquireExisting(sessionID string, prof Profile) (*Proc, Source, t
 		proc := e.proc
 		// Effort and thinking are process flags, so changing them means a
 		// new process. The model can be switched in place. The system
-		// prompt is ignored: Claude Code keeps the one the session began with.
+		// prompt cannot change at all: see prompts.go.
 		if proc.Profile.Effort == prof.Effort && proc.Profile.NoThinking == prof.NoThinking {
 			if prof.Model == "" || proc.Profile.Model == prof.Model {
 				return proc, SourceLive, waited, nil

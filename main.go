@@ -31,7 +31,7 @@ const (
 )
 
 type paths struct {
-	home, socket, work, log, usage, compactions string
+	home, socket, work, log, usage, compactions, prompts string
 }
 
 func resolvePaths() paths {
@@ -48,6 +48,7 @@ func resolvePaths() paths {
 		usage:  filepath.Join(home, "usage.jsonl"),
 
 		compactions: filepath.Join(home, "compactions.json"),
+		prompts:     filepath.Join(home, "session-prompts.json"),
 	}
 }
 
@@ -82,7 +83,8 @@ func usage() {
       -s <session-id>      continue a session
       -m <model>           model alias or id (default haiku)
       -e <effort>          effort level (default medium)
-      --system-file <f>    system prompt for a new session (default empty)
+      --system-file <f>    system prompt for a new session (default empty); with
+                           -s it must match the session's own, or is refused
       --no-thinking        disable extended thinking (MAX_THINKING_TOKENS=0)
       --tag <name>         caller name recorded in the usage log
       --keep-alive <dur>   keep the session's process live this long after
@@ -192,6 +194,7 @@ func serve(args []string) error {
 		CompactAfter:  compactAfter,
 		CompactLatest: compactLatest,
 		StateFile:     pt.compactions,
+		PromptsFile:   pt.prompts,
 	})
 	log.Printf("listening on %s (claude: %s)", pt.socket, bin)
 
@@ -267,6 +270,8 @@ func handler(pool *Pool, ul *usageLog) http.Handler {
 			code := http.StatusBadGateway
 			if errors.Is(err, ErrBusy) {
 				code = http.StatusConflict
+			} else if errors.Is(err, ErrSystemPromptChanged) {
+				code = http.StatusUnprocessableEntity
 			}
 			httpError(w, code, err)
 			return
