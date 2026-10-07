@@ -160,7 +160,7 @@ type Pool struct {
 	// turns holds the named turns in flight, and aborts awaiting theirs: see abort.go.
 	turns  map[string]*turnHandle
 	closed bool
-	stop    chan struct{}
+	stop   chan struct{}
 }
 
 func (p *Pool) now() time.Time {
