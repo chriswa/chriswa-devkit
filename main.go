@@ -63,6 +63,8 @@ func main() {
 		err = serve(os.Args[2:])
 	case "ask":
 		err = ask(os.Args[2:])
+	case "abort":
+		err = abortTurn(os.Args[2:])
 	case "status":
 		err = status()
 	case "stop":
@@ -87,6 +89,7 @@ func usage() {
                            -s it must match the session's own, or is refused
       --no-thinking        disable extended thinking (MAX_THINKING_TOKENS=0)
       --tag <name>         caller name recorded in the usage log
+      --turn-id <id>       name this turn, so that abort can stop it
       --keep-alive <dur>   keep the session's process live this long after
                            the turn, instead of 15m (max 60m)
       --priority           never evict this session to make room for others
@@ -95,6 +98,11 @@ func usage() {
       --compact-above <n>  compact right after this turn if its context
                            exceeds n tokens
     These four apply until the session's next request, which replaces them.
+  claude-print-daemon abort <turn-id>             stop a named turn where it is
+    An abort is not a rewind. The turn's ask returns "subtype": "aborted" and an
+    "abort" object: "prompt_in_session": true means the session keeps the
+    prompt and the interrupted reply, and its next turn follows them; false
+    means the prompt was never sent. An abort may arrive before its ask does.
   claude-print-daemon status                      spares, live sessions, cost totals
   claude-print-daemon serve                       run the daemon in the foreground
   claude-print-daemon stop                        shut the daemon down
@@ -113,6 +121,7 @@ type askBody struct {
 	SystemPrompt string `json:"system_prompt,omitempty"`
 	NoThinking   bool   `json:"no_thinking,omitempty"`
 	Tag          string `json:"tag,omitempty"`
+	TurnID       string `json:"turn_id,omitempty"`
 	// KeepAlive is a Go duration, e.g. "60m"; capped at an hour.
 	KeepAlive    string `json:"keep_alive,omitempty"`
 	Priority     bool   `json:"priority,omitempty"`
@@ -258,6 +267,7 @@ func handler(pool *Pool, ul *usageLog) http.Handler {
 			Prompt:       b.Prompt,
 			SessionID:    b.SessionID,
 			Tag:          b.Tag,
+			TurnID:       b.TurnID,
 			Profile:      Profile{Model: b.Model, Effort: b.Effort, SystemPrompt: b.SystemPrompt, NoThinking: b.NoThinking},
 			KeepAlive:    keepAlive,
 			Priority:     b.Priority,
@@ -276,12 +286,27 @@ func handler(pool *Pool, ul *usageLog) http.Handler {
 			httpError(w, code, err)
 			return
 		}
+		if resp.Abort != nil {
+			log.Printf("ask tag=%s turn=%s ABORTED after %dms: prompt_in_session=%v", orNone(b.Tag), orNone(b.TurnID), resp.WallMS, resp.Abort.PromptInSession)
+		}
 		log.Printf("ask tag=%s done: session=%s source=%s model=%s wall=%dms cost=$%.4f is_error=%v context=%d",
 			orNone(b.Tag), resp.SessionID, resp.Source, resp.Model, resp.WallMS, resp.TotalCostUSD, resp.IsError, resp.ContextTokens)
 		if resp.IsError {
 			log.Printf("ask tag=%s claude reported an error (%s): %s", orNone(b.Tag), resp.Subtype, resp.Result)
 		}
 		writeJSON(w, resp)
+	})
+	mux.HandleFunc("POST /v1/abort", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			TurnID string `json:"turn_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.TurnID == "" {
+			httpError(w, http.StatusBadRequest, errors.New("turn_id is required"))
+			return
+		}
+		running := pool.Abort(b.TurnID)
+		log.Printf("abort turn=%s running=%v", b.TurnID, running)
+		writeJSON(w, map[string]any{"turn_id": b.TurnID, "running": running})
 	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"pool": pool.Status(), "cost": ul.totals()})
@@ -471,6 +496,7 @@ func ask(args []string) error {
 	systemFile := fs.String("system-file", "", "system prompt file")
 	noThinking := fs.Bool("no-thinking", false, "disable extended thinking")
 	tag := fs.String("tag", "", "caller name for the usage log")
+	turnID := fs.String("turn-id", "", "name this turn for abort")
 	keepAlive := fs.Duration("keep-alive", 0, "keep the session live this long after the turn (max 60m)")
 	priority := fs.Bool("priority", false, "exempt the session from eviction")
 	autoCompact := fs.Bool("auto-compact", false, "compact the session before its prompt cache expires")
@@ -488,7 +514,7 @@ func ask(args []string) error {
 		return err
 	}
 	body := askBody{
-		Prompt: string(prompt), SessionID: *session, Model: *model, Effort: *effort, NoThinking: *noThinking, Tag: *tag,
+		Prompt: string(prompt), SessionID: *session, Model: *model, Effort: *effort, NoThinking: *noThinking, Tag: *tag, TurnID: *turnID,
 		Priority: *priority, AutoCompact: *autoCompact, CompactAbove: *compactAbove,
 	}
 	if *keepAlive != 0 {
@@ -522,6 +548,21 @@ func ask(args []string) error {
 		}
 		return fmt.Errorf("daemon returned %s: %s", resp.Status, e.Error)
 	}
+	_, err = io.Copy(os.Stdout, resp.Body)
+	return err
+}
+
+// abortTurn stops a named turn. With no daemon running there is no turn to stop.
+func abortTurn(args []string) error {
+	if len(args) != 1 || args[0] == "" {
+		return errors.New("usage: claude-print-daemon abort <turn-id>")
+	}
+	b, _ := json.Marshal(map[string]string{"turn_id": args[0]})
+	resp, err := client(resolvePaths().socket).Post("http://cpd/v1/abort", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("daemon not running? %w", err)
+	}
+	defer resp.Body.Close()
 	_, err = io.Copy(os.Stdout, resp.Body)
 	return err
 }

@@ -209,7 +209,7 @@ func (p *Pool) runCompaction(rc *runningCompaction, live *liveEntry) {
 		if err := proc.WaitReady(p.cfg.StartTimeout); err != nil {
 			return fmt.Errorf("starting claude: %w", err)
 		}
-		tr, err := proc.Turn(compactPrompt, p.cfg.TurnTimeout)
+		tr, err := proc.Turn(compactPrompt, p.cfg.TurnTimeout, nil)
 		if err != nil {
 			return err
 		}

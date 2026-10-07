@@ -83,9 +83,31 @@ by `serve`) override the 55m and 59m for testing.
   session older than that, or started before this was kept, cannot be checked.
 - One turn at a time per session: a second request for a busy session gets 409.
 
+## Aborting a turn
+
+`ask --turn-id <id>` names a turn; `claude-print-daemon abort <id>` (or
+`POST /v1/abort {"turn_id": "…"}`) stops it where it is, by sending Claude Code
+an interrupt. The interrupted `ask` returns at once with `"subtype":
+"aborted"`, an empty `result`, and an `abort` object. The abort may arrive
+before its `ask` does (it is kept for a minute), and a turn that finished before
+the abort landed is returned whole, with no `abort`.
+
+**An abort is not a rewind.** `abort.prompt_in_session` says where the session
+was left:
+
+- `true`: the prompt was sent. The session keeps it, followed by Claude Code's
+  `[Request interrupted by user]` and whatever of the reply was written before
+  the abort; its next turn follows those. Don't resend the prompt as though the
+  session never saw it.
+- `false`: the abort came before the prompt was sent, and the session is as it
+  was.
+
+The output tokens never generated are not billed. The prompt's input is, as
+soon as the request reaches the API.
+
 ## Files (`~/.claude-print-daemon`, or `$CPD_HOME`)
 
-- `daemon.sock` — HTTP over a Unix socket: `POST /v1/ask`, `GET /v1/status`, `POST /v1/stop`
+- `daemon.sock` — HTTP over a Unix socket: `POST /v1/ask`, `POST /v1/abort`, `GET /v1/status`, `POST /v1/stop`
 - `usage.jsonl` — one line per turn: tag, session, model, `total_cost_usd`, token usage
 - `compactions.json` — scheduled `--auto-compact` compactions
 - `session-prompts.json` — each session's system prompt hash, for the check above
@@ -98,7 +120,7 @@ by `serve`) override the 55m and 59m for testing.
 
 ```json
 {"prompt": "…", "session_id": "optional", "model": "haiku", "effort": "medium",
- "system_prompt": "", "no_thinking": false, "tag": "summary-chat",
+ "system_prompt": "", "no_thinking": false, "tag": "summary-chat", "turn_id": "optional",
  "keep_alive": "60m", "priority": false, "auto_compact": false, "compact_above": 0}
 ```
 
@@ -113,6 +135,8 @@ tokens: the context the turn ended on). Two more appear when relevant:
   `context_tokens_after`, `duration_ms`, `cost_usd`, and `error` on failure.
 - `next_compaction`: `{"trigger": "auto"|"size", "at": time}`, what this turn
   scheduled (`auto`) or started in the background (`size`).
+- `abort`: `{"prompt_in_session": bool}`, on a turn that was aborted (see
+  "Aborting a turn").
 
 `GET /v1/status` lists pending and running compactions under
 `pool.compactions`, and each live session's `keep_alive_s` and `priority`.

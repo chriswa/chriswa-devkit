@@ -310,6 +310,9 @@ type TurnResult struct {
 	ContextTokens int
 	// Compact is set when the turn compacted the session.
 	Compact *CompactBoundary
+	// Interrupted is set when an abort sent Claude Code an interrupt during
+	// the turn. The turn may still have finished first: see the result.
+	Interrupted bool
 }
 
 // CompactBoundary is the compact_metadata of a system/compact_boundary message.
@@ -320,8 +323,14 @@ type CompactBoundary struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
-// Turn sends one user message and waits for the turn's result.
-func (p *Proc) Turn(prompt string, timeout time.Duration) (*TurnResult, error) {
+// interruptTimeout is how long an interrupted turn has to end before its
+// process is given up on.
+const interruptTimeout = 15 * time.Second
+
+// Turn sends one user message and waits for the turn's result. When abort
+// fires, Claude Code is told to interrupt the turn, which then ends with a
+// result of its own; the process stays usable for the session's next turn.
+func (p *Proc) Turn(prompt string, timeout time.Duration, abort <-chan struct{}) (*TurnResult, error) {
 	if err := p.write(map[string]any{
 		"type":    "user",
 		"message": map[string]any{"role": "user", "content": prompt},
@@ -366,7 +375,21 @@ func (p *Proc) Turn(prompt string, timeout time.Duration) (*TurnResult, error) {
 				tr.Raw, tr.Model = line, p.model
 				return tr, nil
 			}
+		case <-abort:
+			abort = nil
+			tr.Interrupted = true
+			if err := p.write(map[string]any{
+				"type":       "control_request",
+				"request_id": fmt.Sprintf("cpd-interrupt-%d", time.Now().UnixNano()),
+				"request":    map[string]any{"subtype": "interrupt"},
+			}); err != nil {
+				return nil, fmt.Errorf("interrupting: %w", err)
+			}
+			deadline = time.After(interruptTimeout)
 		case <-deadline:
+			if tr.Interrupted {
+				return nil, errors.New("timed out waiting for claude to stop after an interrupt")
+			}
 			return nil, errors.New("timed out waiting for claude's reply")
 		}
 	}

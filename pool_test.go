@@ -62,9 +62,17 @@ func fakeClaude() {
 		dur, _ := time.ParseDuration(d)
 		time.Sleep(dur)
 	}
-	out := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(os.Stdout)
+	var encMu sync.Mutex
+	out := struct{ Encode func(any) error }{func(v any) error {
+		encMu.Lock()
+		defer encMu.Unlock()
+		return enc.Encode(v)
+	}}
 	sc := bufio.NewScanner(os.Stdin)
 	turn := 0
+	// A prompt starting "slow" takes FAKE_SLOW_TURN to answer, unless interrupted.
+	var interrupt chan struct{}
 	for sc.Scan() {
 		var m struct {
 			Type      string `json:"type"`
@@ -81,6 +89,31 @@ func fakeClaude() {
 			continue
 		}
 		switch {
+		case m.Type == "control_request" && m.Request.Subtype == "interrupt":
+			out.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": m.RequestID}})
+			if interrupt != nil {
+				close(interrupt)
+				interrupt = nil
+			}
+		case m.Type == "user" && strings.HasPrefix(m.Message.Content, "slow"):
+			turn++
+			writeCtx(readCtx() + len(m.Message.Content))
+			out.Encode(map[string]any{"type": "system", "subtype": "init", "session_id": sessionID, "model": model})
+			stop := make(chan struct{})
+			interrupt = stop
+			content, n := m.Message.Content, turn
+			go func() {
+				dur, _ := time.ParseDuration(os.Getenv("FAKE_SLOW_TURN"))
+				select {
+				case <-stop:
+					out.Encode(map[string]any{"type": "user", "message": map[string]any{"role": "user",
+						"content": []map[string]any{{"type": "text", "text": "[Request interrupted by user]"}}}})
+					out.Encode(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": sessionID})
+				case <-time.After(dur):
+					out.Encode(map[string]any{"type": "result", "subtype": "success", "session_id": sessionID,
+						"result": fmt.Sprintf("%s|turn=%d", content, n)})
+				}
+			}()
 		case m.Type == "control_request" && m.Request.Subtype == "set_model":
 			model = m.Request.Model
 			out.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": m.RequestID}})
@@ -437,5 +470,72 @@ func TestSpawnedClaudeDoesNotInheritAnAgentSessionsIdentity(t *testing.T) {
 	got := scrubbedEnv([]string{"CLAUDECODE=1", "CLAUDE_CODE_CHILD_SESSION=1", "CLAUDE_CONFIG_DIR=/x", "PATH=/bin"})
 	if strings.Join(got, " ") != "CLAUDE_CONFIG_DIR=/x PATH=/bin" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// askAsync starts a named turn and returns its outcome on a channel.
+func (h *harness) askAsync(req AskRequest) <-chan *AskResponse {
+	ch := make(chan *AskResponse, 1)
+	go func() {
+		r, err := h.pool.Ask(req)
+		if err != nil {
+			h.t.Errorf("ask: %v", err)
+		}
+		ch <- r
+	}()
+	return ch
+}
+
+func (h *harness) turnRunning(turnID string) bool {
+	h.pool.mu.Lock()
+	defer h.pool.mu.Unlock()
+	t := h.pool.turns[turnID]
+	return t != nil && t.early.IsZero()
+}
+
+func TestAbortInterruptsATurnAndKeepsItsPromptInTheSession(t *testing.T) {
+	t.Setenv("FAKE_SLOW_TURN", "5s")
+	h := newHarness(t, nil)
+	a := h.ask("", "first", haiku)
+	done := h.askAsync(AskRequest{Prompt: "slow question", SessionID: a.SessionID, Profile: haiku, TurnID: "t1"})
+	h.waitFor("turn to start", func() bool { return h.turnRunning("t1") })
+	time.Sleep(50 * time.Millisecond)
+	if !h.pool.Abort("t1") {
+		t.Fatal("Abort reported no turn running")
+	}
+	r := <-done
+	if r.Abort == nil || !r.Abort.PromptInSession || r.Subtype != "aborted" || r.IsError || r.Result != "" {
+		t.Fatalf("got %+v (abort %+v), want an abort with the prompt in the session", r, r.Abort)
+	}
+	// The session goes on in the same process, after the interrupted turn.
+	next := h.ask(a.SessionID, "after", haiku)
+	if next.Source != SourceLive || next.Result != "after|turn=3" {
+		t.Fatalf("next turn: source %s result %q, want the live process's third turn", next.Source, next.Result)
+	}
+}
+
+func TestAbortArrivingBeforeItsTurnLeavesTheSessionUntouched(t *testing.T) {
+	h := newHarness(t, nil)
+	a := h.ask("", "first", haiku)
+	if h.pool.Abort("t2") {
+		t.Fatal("Abort reported a turn running before any was asked")
+	}
+	r := h.askReq(AskRequest{Prompt: "never sent", SessionID: a.SessionID, Profile: haiku, TurnID: "t2"})
+	if r.Abort == nil || r.Abort.PromptInSession || r.Subtype != "aborted" {
+		t.Fatalf("got %+v (abort %+v), want an abort before the prompt was sent", r, r.Abort)
+	}
+	next := h.ask(a.SessionID, "after", haiku)
+	if next.Result != "after|turn=2" {
+		t.Fatalf("next turn: %q, want the session's second turn", next.Result)
+	}
+}
+
+func TestATurnFinishedBeforeItsAbortIsReportedWhole(t *testing.T) {
+	h := newHarness(t, nil)
+	a := h.ask("", "first", haiku)
+	r := h.askReq(AskRequest{Prompt: "quick", SessionID: a.SessionID, Profile: haiku, TurnID: "t3"})
+	h.pool.Abort("t3")
+	if r.Abort != nil || r.Result != "quick|turn=2" {
+		t.Fatalf("got %+v, want the whole reply", r)
 	}
 }

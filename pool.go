@@ -67,6 +67,8 @@ type AskRequest struct {
 	Profile   Profile `json:"profile"`
 	// Tag names the caller in the usage log, e.g. "summary-chat".
 	Tag string `json:"tag,omitempty"`
+	// TurnID names this turn for Abort. Optional.
+	TurnID string `json:"turn_id,omitempty"`
 
 	// The options below apply to the session from this request until the
 	// next one, which replaces them; a request that leaves one out turns it off.
@@ -114,6 +116,9 @@ type AskResponse struct {
 	Compaction *CompactionInfo `json:"compaction,omitempty"`
 	// NextCompaction is the compaction this turn scheduled or started.
 	NextCompaction *NextCompaction `json:"next_compaction,omitempty"`
+	// Abort is set when the turn was aborted before it finished: see abort.go.
+	// Result is then empty, and Subtype is "aborted".
+	Abort *AbortInfo `json:"abort,omitempty"`
 }
 
 var ErrBusy = errors.New("session already has a turn in progress")
@@ -152,7 +157,9 @@ type Pool struct {
 	compacted map[string]*CompactionInfo
 	// prompts holds the system prompt each session started with: see prompts.go.
 	prompts map[string]*sessionPrompt
-	closed  bool
+	// turns holds the named turns in flight, and aborts awaiting theirs: see abort.go.
+	turns  map[string]*turnHandle
+	closed bool
 	stop    chan struct{}
 }
 
@@ -174,6 +181,7 @@ func NewPool(cfg Config) *Pool {
 		running:   map[string]*runningCompaction{},
 		compacted: map[string]*CompactionInfo{},
 		prompts:   map[string]*sessionPrompt{},
+		turns:     map[string]*turnHandle{},
 		stop:      make(chan struct{}),
 	}
 	p.mu.Lock()
@@ -287,6 +295,10 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 	if req.KeepAlive > MaxKeepAlive {
 		req.KeepAlive = MaxKeepAlive
 	}
+	p.mu.Lock()
+	abort := p.claimTurnLocked(req.TurnID)
+	p.mu.Unlock()
+	defer p.releaseTurn(req.TurnID)
 	var proc *Proc
 	var source Source
 	var waited time.Duration
@@ -339,8 +351,24 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 			return nil, fmt.Errorf("session %s (%s): starting claude: %w", sessionID, source, err)
 		}
 	}
+	if fired(abort) {
+		// Aborted before the prompt left: the session is as it was.
+		p.mu.Lock()
+		if req.SessionID != "" {
+			p.keepLiveLocked(proc, sessionID, req)
+		} else {
+			proc.Kill()
+		}
+		delete(p.busy, sessionID)
+		released = true
+		p.mu.Unlock()
+		return &AskResponse{
+			SessionID: req.SessionID, Source: source, Model: proc.Profile.Model, Subtype: "aborted",
+			WallMS: time.Since(start).Milliseconds(), Abort: &AbortInfo{PromptInSession: false},
+		}, nil
+	}
 	turnStart := p.now()
-	tr, err := proc.Turn(req.Prompt, p.cfg.TurnTimeout)
+	tr, err := proc.Turn(req.Prompt, p.cfg.TurnTimeout, abort)
 	if err != nil {
 		proc.Kill()
 		return nil, fmt.Errorf("session %s (%s): %w", sessionID, source, err)
@@ -365,6 +393,12 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 		resp.SessionID = sessionID
 	}
 	resp.Result, resp.IsError, resp.Subtype = r.Result, r.IsError, r.Subtype
+	// Interrupted, not failed. A turn that finished before the interrupt
+	// landed is reported as the whole reply it is.
+	if tr.Interrupted && r.Subtype != "success" {
+		resp.Result, resp.IsError, resp.Subtype = "", false, "aborted"
+		resp.Abort = &AbortInfo{PromptInSession: true}
+	}
 	resp.TotalCostUSD, resp.DurationMS, resp.DurationAPIMS, resp.Usage = r.TotalCostUSD, r.DurationMS, r.DurationAPIMS, r.Usage
 
 	p.mu.Lock()
@@ -556,6 +590,7 @@ func (p *Pool) tick() {
 		}
 	}
 	p.runDueCompactionsLocked(clock)
+	p.expireAbortsLocked(now)
 }
 
 func (p *Pool) Close() {
