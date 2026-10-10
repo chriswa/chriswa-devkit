@@ -1,0 +1,589 @@
+// claude-print-daemon keeps `claude -p` processes started and waiting, so a
+// caller gets a reply in roughly the API's own latency instead of paying
+// Claude Code's startup on every request.
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const (
+	defaultModel  = "haiku"
+	defaultEffort = "medium"
+)
+
+type paths struct {
+	home, socket, work, log, usage, compactions, prompts string
+}
+
+func resolvePaths() paths {
+	home := os.Getenv("CPD_HOME")
+	if home == "" {
+		h, _ := os.UserHomeDir()
+		home = filepath.Join(h, ".claude-print-daemon")
+	}
+	return paths{
+		home:   home,
+		socket: filepath.Join(home, "daemon.sock"),
+		work:   filepath.Join(home, "work"),
+		log:    filepath.Join(home, "daemon.log"),
+		usage:  filepath.Join(home, "usage.jsonl"),
+
+		compactions: filepath.Join(home, "compactions.json"),
+		prompts:     filepath.Join(home, "session-prompts.json"),
+	}
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+	var err error
+	switch os.Args[1] {
+	case "serve":
+		err = serve(os.Args[2:])
+	case "ask":
+		err = ask(os.Args[2:])
+	case "abort":
+		err = abortTurn(os.Args[2:])
+	case "status":
+		err = status()
+	case "stop":
+		err = stopDaemon()
+	default:
+		usage()
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "claude-print-daemon:", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `usage:
+  claude-print-daemon ask [flags] [prompt-file]   send a prompt (stdin if no file or "-")
+      -s <session-id>      continue a session
+      -m <model>           model alias or id (default haiku)
+      -e <effort>          effort level (default medium)
+      --system-file <f>    system prompt for a new session (default empty); with
+                           -s it must match the session's own, or is refused
+      --no-thinking        disable extended thinking (MAX_THINKING_TOKENS=0)
+      --tag <name>         caller name recorded in the usage log
+      --turn-id <id>       name this turn, so that abort can stop it
+      --keep-alive <dur>   keep the session's process live this long after
+                           the turn, instead of 15m (max 60m)
+      --priority           never evict this session to make room for others
+      --auto-compact       compact the session 55m after this turn, while its
+                           prompt cache is still warm, unless asked again first
+      --compact-above <n>  compact right after this turn if its context
+                           exceeds n tokens
+    These four apply until the session's next request, which replaces them.
+  claude-print-daemon abort <turn-id>             stop a named turn where it is
+    An abort is not a rewind. The turn's ask returns "subtype": "aborted" and an
+    "abort" object: "prompt_in_session": true means the session keeps the
+    prompt and the interrupted reply, and its next turn follows them; false
+    means the prompt was never sent. An abort may arrive before its ask does.
+  claude-print-daemon status                      spares, live sessions, cost totals
+  claude-print-daemon serve                       run the daemon in the foreground
+  claude-print-daemon stop                        shut the daemon down
+`)
+}
+
+// ---- daemon ----
+
+// askBody is the wire format of POST /v1/ask. It is flat so that callers do
+// not need to know which fields are process flags.
+type askBody struct {
+	Prompt       string `json:"prompt"`
+	SessionID    string `json:"session_id,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Effort       string `json:"effort,omitempty"`
+	SystemPrompt string `json:"system_prompt,omitempty"`
+	NoThinking   bool   `json:"no_thinking,omitempty"`
+	Tag          string `json:"tag,omitempty"`
+	TurnID       string `json:"turn_id,omitempty"`
+	// KeepAlive is a Go duration, e.g. "60m"; capped at an hour.
+	KeepAlive    string `json:"keep_alive,omitempty"`
+	Priority     bool   `json:"priority,omitempty"`
+	AutoCompact  bool   `json:"auto_compact,omitempty"`
+	CompactAbove int    `json:"compact_above,omitempty"`
+}
+
+func serve(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	claudeBin := fs.String("claude", envOr("CPD_CLAUDE_BIN", "claude"), "claude binary")
+	_ = fs.Parse(args)
+
+	pt := resolvePaths()
+	for _, d := range []string{pt.home, pt.work} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+	}
+	if c, err := net.Dial("unix", pt.socket); err == nil {
+		c.Close()
+		return errors.New("already running at " + pt.socket)
+	}
+	_ = os.Remove(pt.socket)
+	ln, err := net.Listen("unix", pt.socket)
+	if err != nil {
+		return err
+	}
+	_ = os.Chmod(pt.socket, 0o600)
+
+	logf, err := os.OpenFile(pt.log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	// Always to the file, so the trail is the same however the daemon was
+	// started; to the terminal as well when run by hand.
+	if fi, err := os.Stderr.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		log.SetOutput(io.MultiWriter(logf, os.Stderr))
+	} else {
+		log.SetOutput(logf)
+	}
+
+	bin, err := exec.LookPath(*claudeBin)
+	if err != nil {
+		return fmt.Errorf("finding claude: %w", err)
+	}
+	// Overridable so the cache-warmth rule can be exercised without waiting
+	// an hour; not meant for production use.
+	compactAfter, err := envDuration("CPD_COMPACT_AFTER", 55*time.Minute)
+	if err != nil {
+		return err
+	}
+	compactLatest, err := envDuration("CPD_COMPACT_LATEST", compactAfter+4*time.Minute)
+	if err != nil {
+		return err
+	}
+	if compactLatest <= compactAfter {
+		return errors.New("CPD_COMPACT_LATEST must be later than CPD_COMPACT_AFTER")
+	}
+	ul := &usageLog{path: pt.usage}
+	pool := NewPool(Config{
+		ClaudeBin:      bin,
+		Dir:            pt.work,
+		SpareTTL:       15 * time.Minute,
+		IdleTTL:        15 * time.Minute,
+		MaxLive:        5,
+		ProfileIdleTTL: 15 * time.Minute,
+		StartTimeout:   30 * time.Second,
+		TurnTimeout:    10 * time.Minute,
+		TickInterval:   5 * time.Second,
+		RetryBackoff:   30 * time.Second,
+		// Haiku is the model asked for when a reply must be quick, and
+		// thinking roughly doubles its latency on a short answer.
+		Defaults: []Profile{
+			{Model: "haiku", Effort: defaultEffort, NoThinking: true},
+			{Model: "sonnet", Effort: defaultEffort},
+		},
+		OnResult:      ul.append,
+		CompactAfter:  compactAfter,
+		CompactLatest: compactLatest,
+		StateFile:     pt.compactions,
+		PromptsFile:   pt.prompts,
+	})
+	log.Printf("listening on %s (claude: %s)", pt.socket, bin)
+
+	srv := &http.Server{Handler: handler(pool, ul)}
+	mux := srv.Handler.(*http.ServeMux)
+	mux.HandleFunc("POST /v1/stop", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		go func() { _ = srv.Shutdown(context.Background()) }()
+	})
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sig
+		_ = srv.Shutdown(context.Background())
+	}()
+	err = srv.Serve(ln)
+	pool.Close()
+	_ = os.Remove(pt.socket)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func handler(pool *Pool, ul *usageLog) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/ask", func(w http.ResponseWriter, r *http.Request) {
+		var b askBody
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		if strings.TrimSpace(b.Prompt) == "" {
+			httpError(w, http.StatusBadRequest, errors.New("prompt is empty"))
+			return
+		}
+		if b.Model == "" {
+			b.Model = defaultModel
+		}
+		if b.Effort == "" {
+			b.Effort = defaultEffort
+		}
+		var keepAlive time.Duration
+		if b.KeepAlive != "" {
+			d, err := time.ParseDuration(b.KeepAlive)
+			if err != nil || d < 0 {
+				httpError(w, http.StatusBadRequest, fmt.Errorf("keep_alive %q is not a duration", b.KeepAlive))
+				return
+			}
+			keepAlive = min(d, MaxKeepAlive)
+		}
+		if b.CompactAbove < 0 {
+			httpError(w, http.StatusBadRequest, errors.New("compact_above is negative"))
+			return
+		}
+		started := time.Now()
+		log.Printf("ask tag=%s session=%s model=%s no_thinking=%v prompt=%d chars keep_alive=%s priority=%v auto_compact=%v compact_above=%d",
+			orNone(b.Tag), orNone(b.SessionID), b.Model, b.NoThinking, len(b.Prompt), keepAlive, b.Priority, b.AutoCompact, b.CompactAbove)
+		resp, err := pool.Ask(AskRequest{
+			Prompt:       b.Prompt,
+			SessionID:    b.SessionID,
+			Tag:          b.Tag,
+			TurnID:       b.TurnID,
+			Profile:      Profile{Model: b.Model, Effort: b.Effort, SystemPrompt: b.SystemPrompt, NoThinking: b.NoThinking},
+			KeepAlive:    keepAlive,
+			Priority:     b.Priority,
+			AutoCompact:  b.AutoCompact,
+			CompactAbove: b.CompactAbove,
+		})
+		if err != nil {
+			log.Printf("ask tag=%s FAILED after %dms: %v", orNone(b.Tag), time.Since(started).Milliseconds(), err)
+			ul.appendFailure(b, err)
+			code := http.StatusBadGateway
+			if errors.Is(err, ErrBusy) {
+				code = http.StatusConflict
+			} else if errors.Is(err, ErrSystemPromptChanged) {
+				code = http.StatusUnprocessableEntity
+			}
+			httpError(w, code, err)
+			return
+		}
+		if resp.Abort != nil {
+			log.Printf("ask tag=%s turn=%s ABORTED after %dms: prompt_in_session=%v", orNone(b.Tag), orNone(b.TurnID), resp.WallMS, resp.Abort.PromptInSession)
+		}
+		log.Printf("ask tag=%s done: session=%s source=%s model=%s wall=%dms cost=$%.4f is_error=%v context=%d",
+			orNone(b.Tag), resp.SessionID, resp.Source, resp.Model, resp.WallMS, resp.TotalCostUSD, resp.IsError, resp.ContextTokens)
+		if resp.IsError {
+			log.Printf("ask tag=%s claude reported an error (%s): %s", orNone(b.Tag), resp.Subtype, resp.Result)
+		}
+		writeJSON(w, resp)
+	})
+	mux.HandleFunc("POST /v1/abort", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			TurnID string `json:"turn_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.TurnID == "" {
+			httpError(w, http.StatusBadRequest, errors.New("turn_id is required"))
+			return
+		}
+		running := pool.Abort(b.TurnID)
+		log.Printf("abort turn=%s running=%v", b.TurnID, running)
+		writeJSON(w, map[string]any{"turn_id": b.TurnID, "running": running})
+	})
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"pool": pool.Status(), "cost": ul.totals()})
+	})
+	return mux
+}
+
+func httpError(w http.ResponseWriter, code int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+}
+
+// usageLog appends one line per turn, so cost can be reviewed per caller.
+type usageLog struct {
+	mu   sync.Mutex
+	path string
+}
+
+type usageEntry struct {
+	Time time.Time `json:"time"`
+	// Error is set, and nothing was billed, when the turn never completed.
+	Error        string          `json:"error,omitempty"`
+	Tag          string          `json:"tag,omitempty"`
+	SessionID    string          `json:"session_id"`
+	Source       Source          `json:"source"`
+	Model        string          `json:"model"`
+	TotalCostUSD float64         `json:"total_cost_usd"`
+	WallMS       int64           `json:"wall_ms"`
+	Usage        json.RawMessage `json:"usage,omitempty"`
+}
+
+func (u *usageLog) append(r *AskResponse, tag string) {
+	e := usageEntry{
+		Time: time.Now(), Tag: tag, SessionID: r.SessionID, Source: r.Source,
+		Model: r.Model, TotalCostUSD: r.TotalCostUSD, WallMS: r.WallMS, Usage: r.Usage,
+	}
+	if r.IsError {
+		e.Error = r.Result
+	}
+	u.write(e)
+}
+
+func (u *usageLog) appendFailure(b askBody, err error) {
+	u.write(usageEntry{Time: time.Now(), Tag: b.Tag, SessionID: b.SessionID, Model: b.Model, Error: err.Error()})
+}
+
+func (u *usageLog) write(e usageEntry) {
+	b, _ := json.Marshal(e)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	f, err := os.OpenFile(u.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		log.Printf("usage log: %v", err)
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
+type costTotals struct {
+	Turns   int     `json:"turns"`
+	CostUSD float64 `json:"cost_usd"`
+}
+
+func (u *usageLog) totals() map[string]map[string]costTotals {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := map[string]map[string]costTotals{"all_time": {}, "last_24h": {}}
+	f, err := os.Open(u.path)
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+	cutoff := time.Now().Add(-24 * time.Hour)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		var e usageEntry
+		if json.Unmarshal(sc.Bytes(), &e) != nil {
+			continue
+		}
+		tag := e.Tag
+		if tag == "" {
+			tag = "(untagged)"
+		}
+		for _, window := range []string{"all_time", "last_24h"} {
+			if window == "last_24h" && e.Time.Before(cutoff) {
+				continue
+			}
+			for _, k := range []string{tag, "total"} {
+				t := out[window][k]
+				t.Turns++
+				t.CostUSD += e.TotalCostUSD
+				out[window][k] = t
+			}
+		}
+	}
+	return out
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func envDuration(k string, def time.Duration) (time.Duration, error) {
+	v := os.Getenv(k)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s=%q is not a positive duration", k, v)
+	}
+	return d, nil
+}
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// ---- client ----
+
+func client(socket string) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+	}}
+}
+
+// ensureDaemon starts the daemon in the background if nothing is listening.
+func ensureDaemon(pt paths) error {
+	if c, err := net.Dial("unix", pt.socket); err == nil {
+		c.Close()
+		return nil
+	}
+	if err := os.MkdirAll(pt.home, 0o700); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// The daemon logs to this file itself; its stderr goes here too so that
+	// a panic is not lost.
+	logf, err := os.OpenFile(pt.log, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	cmd := exec.Command(self, "serve")
+	cmd.Stderr = logf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	_ = cmd.Process.Release()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if c, err := net.Dial("unix", pt.socket); err == nil {
+			c.Close()
+			return nil
+		}
+	}
+	return errors.New("daemon did not start; see " + pt.log)
+}
+
+func ask(args []string) error {
+	fs := flag.NewFlagSet("ask", flag.ExitOnError)
+	session := fs.String("s", "", "session id to continue")
+	model := fs.String("m", "", "model")
+	effort := fs.String("e", "", "effort")
+	systemFile := fs.String("system-file", "", "system prompt file")
+	noThinking := fs.Bool("no-thinking", false, "disable extended thinking")
+	tag := fs.String("tag", "", "caller name for the usage log")
+	turnID := fs.String("turn-id", "", "name this turn for abort")
+	keepAlive := fs.Duration("keep-alive", 0, "keep the session live this long after the turn (max 60m)")
+	priority := fs.Bool("priority", false, "exempt the session from eviction")
+	autoCompact := fs.Bool("auto-compact", false, "compact the session before its prompt cache expires")
+	compactAbove := fs.Int("compact-above", 0, "compact right after the turn if the context exceeds this many tokens")
+	_ = fs.Parse(args)
+
+	var prompt []byte
+	var err error
+	if f := fs.Arg(0); f != "" && f != "-" {
+		prompt, err = os.ReadFile(f)
+	} else {
+		prompt, err = io.ReadAll(os.Stdin)
+	}
+	if err != nil {
+		return err
+	}
+	body := askBody{
+		Prompt: string(prompt), SessionID: *session, Model: *model, Effort: *effort, NoThinking: *noThinking, Tag: *tag, TurnID: *turnID,
+		Priority: *priority, AutoCompact: *autoCompact, CompactAbove: *compactAbove,
+	}
+	if *keepAlive != 0 {
+		body.KeepAlive = keepAlive.String()
+	}
+	if *systemFile != "" {
+		sp, err := os.ReadFile(*systemFile)
+		if err != nil {
+			return err
+		}
+		body.SystemPrompt = string(sp)
+	}
+
+	pt := resolvePaths()
+	if err := ensureDaemon(pt); err != nil {
+		return err
+	}
+	b, _ := json.Marshal(body)
+	resp, err := client(pt.socket).Post("http://cpd/v1/ask", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		if json.Unmarshal(raw, &e) != nil || e.Error == "" {
+			e.Error = strings.TrimSpace(string(raw))
+		}
+		return fmt.Errorf("daemon returned %s: %s", resp.Status, e.Error)
+	}
+	_, err = io.Copy(os.Stdout, resp.Body)
+	return err
+}
+
+// abortTurn stops a named turn. With no daemon running there is no turn to stop.
+func abortTurn(args []string) error {
+	if len(args) != 1 || args[0] == "" {
+		return errors.New("usage: claude-print-daemon abort <turn-id>")
+	}
+	b, _ := json.Marshal(map[string]string{"turn_id": args[0]})
+	resp, err := client(resolvePaths().socket).Post("http://cpd/v1/abort", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("daemon not running? %w", err)
+	}
+	defer resp.Body.Close()
+	_, err = io.Copy(os.Stdout, resp.Body)
+	return err
+}
+
+func status() error {
+	pt := resolvePaths()
+	resp, err := client(pt.socket).Get("http://cpd/v1/status")
+	if err != nil {
+		return fmt.Errorf("daemon not running? %w", err)
+	}
+	defer resp.Body.Close()
+	_, err = io.Copy(os.Stdout, resp.Body)
+	return err
+}
+
+func stopDaemon() error {
+	pt := resolvePaths()
+	resp, err := client(pt.socket).Post("http://cpd/v1/stop", "", nil)
+	if err != nil {
+		return fmt.Errorf("daemon not running? %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
