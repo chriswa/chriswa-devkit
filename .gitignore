@@ -16,3 +16,6 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Built from tools/claude-print-daemon
+bin/claude-print-daemon

@@ -91,6 +91,7 @@ chriswa-devkit/
 ### Claude Code Tools
 
 - **Custom Statusline**: Shows directory, git branch, model, cost, tokens, and session ID
+- **claude-print-daemon** (`tools/claude-print-daemon`, Go): keeps `claude -p` processes warm so a reply skips Claude Code's startup. Build it into `bin/` with `(cd tools/claude-print-daemon && go build -o ../../bin/claude-print-daemon .)`
 
 ## Technology
 

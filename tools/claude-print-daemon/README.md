@@ -5,11 +5,16 @@ API's own latency instead of Claude Code's ~1 s startup on every call. It uses
 the unmodified Claude Code binary signed in with your own subscription.
 
 ```
-go build -o claude-print-daemon .
-echo "Name a colour." | ./claude-print-daemon ask --tag me --no-thinking
-./claude-print-daemon ask -s <session_id> prompt.txt   # continue that session
-./claude-print-daemon status                           # spares, live sessions, cost by tag
+go build -o ../../bin/claude-print-daemon .            # into chriswa-devkit's bin/, on PATH
+echo "Name a colour." | claude-print-daemon ask --tag me --no-thinking
+claude-print-daemon ask -s <session_id> prompt.txt     # continue that session
+claude-print-daemon status                             # spares, live sessions, cost by tag
 ```
+
+The binary is built straight into `bin/`, not behind a launcher script: a
+wrapper would add a few milliseconds to every call. Rebuild after changing
+the code; a running daemon keeps its old binary until it is stopped
+(`claude-print-daemon stop`).
 
 `ask` starts the daemon if it isn't running and prints the JSON response.
 Prompts are read from a file or stdin, never from the command line.
