@@ -37,6 +37,21 @@ This installs the Bash command safety guards as a Claude Code plugin.
 
 **Updating the plugin:** When changes are made, bump the version in `default-plugin/.claude-plugin/plugin.json`. Claude Code will detect the new version and update automatically.
 
+### 3. `self-terminate` plugin (optional, intentionally NOT installed)
+
+The marketplace also offers a second plugin, `self-terminate`, holding a skill
+that lets a session end itself by SIGTERMing its own `claude` process. It is
+shipped **uninstalled on purpose**: on machines running spaceterm, the
+`mcp__plugin_spaceterm-hooks_spaceterm__self_terminate` MCP tool does the same
+job and is surface-aware (it stops at the pty daemon and archives the surface).
+Having both live means you cannot tell which one fired.
+
+Install it only on a machine with no spaceterm MCP tool:
+
+```bash
+/plugin install self-terminate@chriswa-devkit-marketplace
+```
+
 ## Project Structure
 
 ```
@@ -56,6 +71,11 @@ chriswa-devkit/
 │   │       └── git-guard.ts
 │   └── scripts/              # Utility scripts
 │       └── capture-session-id.sh
+├── self-terminate-plugin/    # Optional plugin, NOT installed by default
+│   ├── .claude-plugin/
+│   │   └── plugin.json
+│   └── skills/
+│       └── self-terminate/   # SIGTERM your own claude process
 ├── claude/                   # Claude Code utilities (not plugin)
 │   └── statusline/
 ├── shell/                    # Shell customization

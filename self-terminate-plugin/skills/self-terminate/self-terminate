@@ -1,0 +1,85 @@
+#!/bin/zsh
+# self-terminate — end THIS Claude Code session by signalling its own process.
+#
+# Walks up the process tree from this script and SIGTERMs the nearest ancestor
+# that is a `claude` executable. Because it only ever considers ANCESTORS, it
+# structurally cannot reach another agent's session: a peer, an orchestrator or
+# an unrelated session is never on this process's parent chain. That is the
+# whole safety argument — there is no pattern match to get wrong.
+#
+# SIGTERM, never SIGKILL. -9 skips the graceful shutdown that writes the
+# transcript, which is what makes the session resumable afterwards.
+
+set -u
+emulate -L zsh
+
+MAX_HOPS=12
+
+die() { print -u2 "self-terminate: $*"; exit 1; }
+
+dry=0
+while (( $# )); do
+  case "$1" in
+    --dry-run|-n) dry=1; shift ;;
+    --max-hops)   MAX_HOPS=$2; shift 2 ;;
+    -h|--help)
+      cat <<'USAGE'
+self-terminate — end this Claude Code session
+
+  self-terminate            SIGTERM this session's own claude process
+  self-terminate --dry-run  name the target and exit, changing nothing
+
+Only ancestors of this process are ever considered, so this cannot signal
+another session.
+USAGE
+      exit 0 ;;
+    *) die "unknown argument: $1 (try --help)" ;;
+  esac
+done
+
+# Match on `ps -o comm=` — the EXECUTABLE — and compare its basename. Never
+# match on `ps -o command=` (full argv): argv carries prompt text and heredoc
+# bodies, so a substring match there hits unrelated processes and, memorably,
+# the matching script's own source.
+target=""
+trail=()
+p=$PPID
+for _ in {1..$MAX_HOPS}; do
+  comm=$(ps -o comm= -p "$p" 2>/dev/null) || break
+  [[ -n "$comm" ]] || break
+  trail+=("$p ${comm:t}")
+  if [[ "${comm:t}" == "claude" ]]; then
+    target=$p
+    break
+  fi
+  p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+  [[ -z "$p" || "$p" == "0" || "$p" == "1" ]] && break
+done
+
+if [[ -z "$target" ]]; then
+  print -u2 "self-terminate: no 'claude' process among this process's ancestors."
+  print -u2 "walked: ${(j: -> :)trail}"
+  print -u2 "Nothing was signalled. This is what running outside a Claude Code session looks like."
+  exit 1
+fi
+
+# Belt and braces. Neither can be reached by the loop above, which stops at 1 --
+# but a pid of 1 or 0 passed to kill is a catastrophe, not a bug report.
+[[ "$target" == "1" || "$target" == "0" ]] && die "refusing to signal pid $target"
+
+info=$(ps -o pid=,etime=,comm= -p "$target" 2>/dev/null)
+print -r -- "self-terminate: target is this session's own claude process"
+print -r -- "  ${info}"
+print -r -- "  reached via: ${(j: -> :)trail}"
+
+if (( dry )); then
+  print -r -- "self-terminate: --dry-run, nothing signalled."
+  exit 0
+fi
+
+print -r -- "self-terminate: sending SIGTERM to $target"
+kill -TERM "$target" 2>/dev/null || die "kill -TERM $target failed"
+
+# Anything printed after this point is unlikely to be seen: the shell running
+# this script is a child of the process just signalled.
+exit 0

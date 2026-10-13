@@ -1,0 +1,5 @@
+{
+  "name": "self-terminate",
+  "description": "A skill that lets a Claude Code session end itself by SIGTERMing its own claude process. Deliberately shipped uninstalled — install it only on a machine with no spaceterm MCP self_terminate tool.",
+  "version": "1.0.0"
+}

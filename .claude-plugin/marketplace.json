@@ -8,6 +8,10 @@
     {
       "name": "chriswa-devkit",
       "source": "./default-plugin"
+    },
+    {
+      "name": "self-terminate",
+      "source": "./self-terminate-plugin"
     }
   ]
 }
