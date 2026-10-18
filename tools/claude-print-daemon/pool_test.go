@@ -149,6 +149,7 @@ func fakeClaude() {
 				"type": "result", "subtype": "success", "session_id": sessionID,
 				"result":         fmt.Sprintf("%s|turn=%d", m.Message.Content, turn),
 				"total_cost_usd": 0.001, "usage": map[string]any{"input_tokens": 1},
+				"modelUsage": map[string]any{model: map[string]any{"contextWindow": 200000}},
 			})
 		}
 	}

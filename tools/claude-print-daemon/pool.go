@@ -111,6 +111,9 @@ type AskResponse struct {
 	// ContextTokens is the session's context size after the turn: the final
 	// API call's input, cache read and cache creation tokens.
 	ContextTokens int `json:"context_tokens"`
+	// ContextWindow is the model's context window, as Claude Code reports
+	// it. Zero when it did not say.
+	ContextWindow int `json:"context_window,omitempty"`
 	// Compaction reports a compaction of this session that finished since
 	// its previous turn, or failed.
 	Compaction *CompactionInfo `json:"compaction,omitempty"`
@@ -383,6 +386,9 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 		DurationMS    int64           `json:"duration_ms"`
 		DurationAPIMS int64           `json:"duration_api_ms"`
 		Usage         json.RawMessage `json:"usage"`
+		ModelUsage    map[string]struct {
+			ContextWindow int `json:"contextWindow"`
+		} `json:"modelUsage"`
 	}
 	if err := json.Unmarshal(tr.Raw, &r); err != nil {
 		proc.Kill()
@@ -400,6 +406,14 @@ func (p *Pool) Ask(req AskRequest) (*AskResponse, error) {
 		resp.Abort = &AbortInfo{PromptInSession: true}
 	}
 	resp.TotalCostUSD, resp.DurationMS, resp.DurationAPIMS, resp.Usage = r.TotalCostUSD, r.DurationMS, r.DurationAPIMS, r.Usage
+	// The turn's own model; failing that, the largest window any model reported.
+	if u, ok := r.ModelUsage[resp.Model]; ok {
+		resp.ContextWindow = u.ContextWindow
+	} else {
+		for _, u := range r.ModelUsage {
+			resp.ContextWindow = max(resp.ContextWindow, u.ContextWindow)
+		}
+	}
 
 	p.mu.Lock()
 	p.rememberPromptLocked(resp.SessionID, req.SessionID == "", req.Profile.SystemPrompt)

@@ -57,6 +57,9 @@ type CompactionInfo struct {
 	// CompactedBeforeMS is how long before this turn started the compaction
 	// finished.
 	CompactedBeforeMS int64 `json:"compacted_before_ms"`
+	// LastActivity is when the turn before the compaction ended: what an
+	// auto compaction counted its delay from.
+	LastActivity time.Time `json:"last_activity"`
 	// WaitedMS is how long this request waited for the compaction to finish.
 	WaitedMS            int64   `json:"waited_ms,omitempty"`
 	ContextTokensBefore int     `json:"context_tokens_before"`
@@ -187,7 +190,7 @@ func (p *Pool) startCompactionLocked(job *compactJob, trigger string) {
 
 func (p *Pool) runCompaction(rc *runningCompaction, live *liveEntry) {
 	job := rc.job
-	info := &CompactionInfo{Trigger: rc.trigger, ContextTokensBefore: job.ContextTokens}
+	info := &CompactionInfo{Trigger: rc.trigger, LastActivity: job.LastActivity, ContextTokensBefore: job.ContextTokens}
 	var resp *AskResponse
 	err := func() error {
 		p.mu.Lock()

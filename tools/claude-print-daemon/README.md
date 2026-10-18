@@ -132,11 +132,12 @@ soon as the request reaches the API.
 The response includes `session_id`, `result`, `source` (`spare`, `live`,
 `cold` or `resume`), `model`, `total_cost_usd`, `usage`, `wall_ms` and
 `context_tokens` (the final API call's input + cache read + cache creation
-tokens: the context the turn ended on). Two more appear when relevant:
+tokens: the context the turn ended on), and `context_window` (the model's, as
+Claude Code reports it). More appear when relevant:
 
 - `compaction`: a compaction of this session that finished (or failed) since
   its previous turn — `trigger` (`auto` or `size`), `compacted_before_ms`,
-  `waited_ms` (if this request waited for it), `context_tokens_before`,
+  `last_activity` (when the turn before it ended), `waited_ms` (if this request waited for it), `context_tokens_before`,
   `context_tokens_after`, `duration_ms`, `cost_usd`, and `error` on failure.
 - `next_compaction`: `{"trigger": "auto"|"size", "at": time}`, what this turn
   scheduled (`auto`) or started in the background (`size`).

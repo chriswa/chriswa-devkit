@@ -34,8 +34,8 @@ func TestCompactDecisionFollowsTheCacheWindows(t *testing.T) {
 func TestAutoCompactRunsWhenDueAndTheNextTurnHearsOfIt(t *testing.T) {
 	h := newClockedHarness(t, t0, nil)
 	a := h.askReq(AskRequest{Prompt: strings.Repeat("x", 1000), Profile: haiku, AutoCompact: true, KeepAlive: time.Hour})
-	if a.ContextTokens != 1000 {
-		t.Fatalf("context_tokens %d, want 1000", a.ContextTokens)
+	if a.ContextTokens != 1000 || a.ContextWindow != 200000 {
+		t.Fatalf("context_tokens %d of %d, want 1000 of 200000", a.ContextTokens, a.ContextWindow)
 	}
 	if n := a.NextCompaction; n == nil || n.Trigger != TriggerAuto || !n.At.Equal(t0.Add(55*time.Minute)) {
 		t.Fatalf("next_compaction %+v, want auto at +55m", n)
@@ -59,8 +59,8 @@ func TestAutoCompactRunsWhenDueAndTheNextTurnHearsOfIt(t *testing.T) {
 
 	b := h.askReq(AskRequest{Prompt: "yy", SessionID: a.SessionID, Profile: haiku})
 	c := b.Compaction
-	if c == nil || c.Trigger != TriggerAuto || c.ContextTokensBefore != 1000 || c.ContextTokensAfter != 100 || c.Error != "" || c.CacheReadTokens != 1000 {
-		t.Fatalf("compaction %+v, want auto 1000 -> 100", c)
+	if c == nil || c.Trigger != TriggerAuto || c.ContextTokensBefore != 1000 || c.ContextTokensAfter != 100 || c.Error != "" || c.CacheReadTokens != 1000 || !c.LastActivity.Equal(t0) {
+		t.Fatalf("compaction %+v, want auto 1000 -> 100 after the turn at t0", c)
 	}
 	if b.Source != SourceLive || b.ContextTokens != 102 {
 		t.Fatalf("got %s context %d, want the respawned live process on the compacted context", b.Source, b.ContextTokens)
