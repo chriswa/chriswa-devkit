@@ -280,3 +280,61 @@ func TestARequestWithoutKeepAliveRevertsToIdleTTL(t *testing.T) {
 		t.Fatal("keep-alive outlived the request that set it")
 	}
 }
+
+func TestCompactRunsNowAndReturnsWhenDone(t *testing.T) {
+	t.Setenv("FAKE_COMPACT_DELAY", "200ms")
+	h := newClockedHarness(t, t0, nil)
+	a := h.askReq(AskRequest{Prompt: strings.Repeat("x", 500), Profile: haiku, AutoCompact: true, KeepAlive: time.Hour})
+	info, err := h.pool.Compact(a.SessionID, "me", haiku)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Trigger != TriggerAsked || info.ContextTokensAfter != 50 || info.Error != "" {
+		t.Fatalf("compaction %+v, want an asked compaction to 50 tokens", info)
+	}
+	h.pool.mu.Lock()
+	running := h.pool.running[a.SessionID]
+	h.pool.mu.Unlock()
+	if running != nil || h.compactionsRun() != 1 {
+		t.Fatalf("running %+v after %d compactions, want one, finished", running, h.compactionsRun())
+	}
+	if h.pendingJob(a.SessionID) != nil {
+		t.Fatal("the scheduled compaction survived the one asked for")
+	}
+	if !h.isLive(a.SessionID) {
+		t.Fatal("live session was not kept live after compaction")
+	}
+	// Its caller heard how it went: the next turn is not told again.
+	if b := h.askReq(AskRequest{Prompt: "y", SessionID: a.SessionID, Profile: haiku}); b.Compaction != nil || b.Source != SourceLive || b.ContextTokens != 51 {
+		t.Fatalf("got %s context %d compaction %+v, want the live process on the compacted context, unreported", b.Source, b.ContextTokens, b.Compaction)
+	}
+}
+
+func TestCompactJoinsARunningCompaction(t *testing.T) {
+	t.Setenv("FAKE_COMPACT_DELAY", "200ms")
+	h := newClockedHarness(t, t0, nil)
+	a := h.askReq(AskRequest{Prompt: strings.Repeat("x", 500), Profile: haiku, CompactAbove: 400})
+	info, err := h.pool.Compact(a.SessionID, "me", haiku)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Trigger != TriggerSize || h.compactionsRun() != 1 {
+		t.Fatalf("compaction %+v after %d runs, want the size compaction already under way", info, h.compactionsRun())
+	}
+}
+
+func TestCompactIsRefusedWhileATurnRuns(t *testing.T) {
+	t.Setenv("FAKE_SLOW_TURN", "300ms")
+	h := newClockedHarness(t, t0, nil)
+	a := h.askReq(AskRequest{Prompt: "a", Profile: haiku})
+	done := h.askAsync(AskRequest{Prompt: "slow", SessionID: a.SessionID, Profile: haiku})
+	h.waitFor("the turn to start", func() bool {
+		h.pool.mu.Lock()
+		defer h.pool.mu.Unlock()
+		return h.pool.busy[a.SessionID]
+	})
+	if _, err := h.pool.Compact(a.SessionID, "me", haiku); !errors.Is(err, ErrBusy) {
+		t.Fatalf("got %v, want ErrBusy", err)
+	}
+	<-done
+}

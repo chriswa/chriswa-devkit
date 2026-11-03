@@ -56,6 +56,16 @@ that leaves an option out turns it off for the session.
 - `--compact-above <tokens>` compacts right after the turn, in the
   background, if the turn's context exceeds the threshold.
 
+A caller that would rather choose the moment, and wait it out, runs
+`claude-print-daemon compact -s <session_id>` (`POST /v1/compact`) instead of
+passing `--compact-above`. It compacts the session now and returns once it is
+done, with the same object an ask's `compaction` field carries (`trigger`
+`asked`, and `error` if it failed); that result goes to this caller, so the
+session's next turn does not report it again. A compaction already running is
+waited for, a scheduled one is dropped, and a session with a turn in flight is
+refused with 409. Its `-m`, `-e` and `--no-thinking` resume a session that has
+no live process afterwards.
+
 A request for a session that is being compacted waits for the compaction to
 finish. Compaction sends `/compact` to a separate process resumed on the
 session without `--disable-slash-commands` (under that flag Claude Code
@@ -112,7 +122,7 @@ soon as the request reaches the API.
 
 ## Files (`~/.claude-print-daemon`, or `$CPD_HOME`)
 
-- `daemon.sock` — HTTP over a Unix socket: `POST /v1/ask`, `POST /v1/abort`, `GET /v1/status`, `POST /v1/stop`
+- `daemon.sock` — HTTP over a Unix socket: `POST /v1/ask`, `POST /v1/compact`, `POST /v1/abort`, `GET /v1/status`, `POST /v1/stop`
 - `usage.jsonl` — one line per turn: tag, session, model, `total_cost_usd`, token usage
 - `compactions.json` — scheduled `--auto-compact` compactions
 - `session-prompts.json` — each session's system prompt hash, for the check above
@@ -135,7 +145,7 @@ The response includes `session_id`, `result`, `source` (`spare`, `live`,
 tokens: the context the turn ended on). Two more appear when relevant:
 
 - `compaction`: a compaction of this session that finished (or failed) since
-  its previous turn — `trigger` (`auto` or `size`), `compacted_before_ms`,
+  its previous turn — `trigger` (`auto`, `size` or `asked`), `compacted_before_ms`,
   `waited_ms` (if this request waited for it), `context_tokens_before`,
   `context_tokens_after`, `duration_ms`, `cost_usd`, and `error` on failure.
 - `next_compaction`: `{"trigger": "auto"|"size", "at": time}`, what this turn

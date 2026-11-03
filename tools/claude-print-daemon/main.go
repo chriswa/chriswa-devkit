@@ -63,6 +63,8 @@ func main() {
 		err = serve(os.Args[2:])
 	case "ask":
 		err = ask(os.Args[2:])
+	case "compact":
+		err = compact(os.Args[2:])
 	case "abort":
 		err = abortTurn(os.Args[2:])
 	case "status":
@@ -98,6 +100,12 @@ func usage() {
       --compact-above <n>  compact right after this turn if its context
                            exceeds n tokens
     These four apply until the session's next request, which replaces them.
+  claude-print-daemon compact -s <session-id>     compact the session now, and wait
+      -m, -e, --no-thinking   the session's profile, to resume it with if it
+                              has no live process
+      --tag <name>            caller name recorded in the usage log
+    Prints how it went: the same object as an ask's "compaction", with
+    "error" set if it failed. Refused with 409 while the session has a turn.
   claude-print-daemon abort <turn-id>             stop a named turn where it is
     An abort is not a rewind. The turn's ask returns "subtype": "aborted" and an
     "abort" object: "prompt_in_session": true means the session keeps the
@@ -127,6 +135,16 @@ type askBody struct {
 	Priority     bool   `json:"priority,omitempty"`
 	AutoCompact  bool   `json:"auto_compact,omitempty"`
 	CompactAbove int    `json:"compact_above,omitempty"`
+}
+
+// compactBody is the wire format of POST /v1/compact. The profile resumes a
+// session that has no live process once it is compacted.
+type compactBody struct {
+	SessionID  string `json:"session_id"`
+	Tag        string `json:"tag,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Effort     string `json:"effort,omitempty"`
+	NoThinking bool   `json:"no_thinking,omitempty"`
 }
 
 func serve(args []string) error {
@@ -295,6 +313,30 @@ func handler(pool *Pool, ul *usageLog) http.Handler {
 			log.Printf("ask tag=%s claude reported an error (%s): %s", orNone(b.Tag), resp.Subtype, resp.Result)
 		}
 		writeJSON(w, resp)
+	})
+	mux.HandleFunc("POST /v1/compact", func(w http.ResponseWriter, r *http.Request) {
+		var b compactBody
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.SessionID == "" {
+			httpError(w, http.StatusBadRequest, errors.New("session_id is required"))
+			return
+		}
+		if b.Model == "" {
+			b.Model = defaultModel
+		}
+		if b.Effort == "" {
+			b.Effort = defaultEffort
+		}
+		log.Printf("compact tag=%s session=%s", orNone(b.Tag), b.SessionID)
+		info, err := pool.Compact(b.SessionID, b.Tag, Profile{Model: b.Model, Effort: b.Effort, NoThinking: b.NoThinking})
+		if err != nil {
+			code := http.StatusBadGateway
+			if errors.Is(err, ErrBusy) {
+				code = http.StatusConflict
+			}
+			httpError(w, code, err)
+			return
+		}
+		writeJSON(w, info)
 	})
 	mux.HandleFunc("POST /v1/abort", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
@@ -528,12 +570,31 @@ func ask(args []string) error {
 		body.SystemPrompt = string(sp)
 	}
 
+	return post("/v1/ask", body)
+}
+
+func compact(args []string) error {
+	fs := flag.NewFlagSet("compact", flag.ExitOnError)
+	session := fs.String("s", "", "session id to compact")
+	model := fs.String("m", "", "model")
+	effort := fs.String("e", "", "effort")
+	noThinking := fs.Bool("no-thinking", false, "disable extended thinking")
+	tag := fs.String("tag", "", "caller name for the usage log")
+	_ = fs.Parse(args)
+	if *session == "" {
+		return errors.New("usage: claude-print-daemon compact -s <session-id>")
+	}
+	return post("/v1/compact", compactBody{SessionID: *session, Tag: *tag, Model: *model, Effort: *effort, NoThinking: *noThinking})
+}
+
+// post sends body to the daemon, starting it if need be, and prints its answer.
+func post(path string, body any) error {
 	pt := resolvePaths()
 	if err := ensureDaemon(pt); err != nil {
 		return err
 	}
 	b, _ := json.Marshal(body)
-	resp, err := client(pt.socket).Post("http://cpd/v1/ask", "application/json", bytes.NewReader(b))
+	resp, err := client(pt.socket).Post("http://cpd"+path, "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}

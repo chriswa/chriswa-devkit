@@ -20,8 +20,9 @@ const compactPrompt = "/compact"
 
 // Compaction triggers.
 const (
-	TriggerAuto = "auto" // --auto-compact: CompactAfter after the last turn
-	TriggerSize = "size" // --compact-above: the turn's context exceeded the threshold
+	TriggerAuto  = "auto"  // --auto-compact: CompactAfter after the last turn
+	TriggerSize  = "size"  // --compact-above: the turn's context exceeded the threshold
+	TriggerAsked = "asked" // POST /v1/compact: the caller asked, and waits for it
 )
 
 // compactJob is a scheduled compaction: everything needed to resume the
@@ -294,6 +295,48 @@ func (p *Pool) runCompaction(rc *runningCompaction, live *liveEntry) {
 	if resp != nil && p.cfg.OnResult != nil {
 		p.cfg.OnResult(resp, "compact:"+orNone(job.Tag))
 	}
+}
+
+// Compact compacts the session now and returns once it is done, for a caller
+// that decides for itself when its session is compacted and waits it out. A
+// compaction already running is waited for instead of starting another, and
+// a scheduled one is dropped: the session is compacted now. prof is used
+// only when the session has no live process, to resume it afterwards with.
+// The result goes to this caller, not to the session's next turn.
+func (p *Pool) Compact(sessionID, tag string, prof Profile) (*CompactionInfo, error) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errors.New("daemon is shutting down")
+	}
+	rc := p.running[sessionID]
+	if rc == nil {
+		if p.busy[sessionID] {
+			p.mu.Unlock()
+			return nil, ErrBusy
+		}
+		if e := p.live[sessionID]; e != nil {
+			prof = e.proc.Profile
+		}
+		job := &compactJob{SessionID: sessionID, LastActivity: p.now(), Dir: p.cfg.Dir, Profile: prof, Tag: tag}
+		if pending := p.pending[sessionID]; pending != nil {
+			job.ContextTokens = pending.ContextTokens
+			delete(p.pending, sessionID)
+			p.savePendingLocked()
+		}
+		p.startCompactionLocked(job, TriggerAsked)
+		rc = p.running[sessionID]
+	}
+	p.mu.Unlock()
+	<-rc.done
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	info := p.compacted[sessionID]
+	delete(p.compacted, sessionID)
+	if info == nil {
+		return nil, errors.New("daemon is shutting down")
+	}
+	return info, nil
 }
 
 func (p *Pool) compactionStatusLocked(now time.Time) []CompactionStatus {
