@@ -16,6 +16,7 @@ const DEFAULT_MODEL = "jev-latest";
 // A model missing here gets a null cost and a warning, so add new versions as they ship.
 const USD_PER_MTOK_BY_MODEL: Record<string, number> = {
   "jev-1.13.0": 0.042,
+  "jev-1.14.0": 0.042,
 };
 const MAX_ATTEMPTS = 4;
 
@@ -44,7 +45,8 @@ Question types: noul (yes/no probability), choice (one of a set), score (ordered
 Full input format, answer shapes, and best practices: ${README}
 Live docs: https://docs.typesafe.ai/llms.txt
 
-Requires TYPESAFE_API_KEY in the environment. Usage is logged to ${USAGE_LOG}.`;
+Requires TYPESAFE_API_KEY in the environment. Usage is logged to ${USAGE_LOG};
+set JEV_TAG to record which tool made the call (its "tag" field).`;
 
 // ---------- Schemas (https://docs.typesafe.ai/api.md) ----------
 
@@ -116,6 +118,8 @@ const UsageLogEntry = z.object({
   // Estimate at log time from USD_PER_MTOK_BY_MODEL; null if the model had no known price.
   cost_estimate: z.number().nullable(),
   request_id: z.string().optional(),
+  // The caller's JEV_TAG, so spend can be split by tool.
+  tag: z.string().optional(),
 });
 type UsageLogEntry = z.infer<typeof UsageLogEntry>;
 
@@ -240,6 +244,7 @@ async function ask(inputArg: string): Promise<void> {
       model,
       cost_estimate: cost,
       request_id: typeof r.request_id === "string" ? r.request_id : undefined,
+      tag: process.env.JEV_TAG || undefined,
     });
   }
 

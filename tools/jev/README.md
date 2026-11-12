@@ -98,6 +98,7 @@ Live docs are the source of truth: https://docs.typesafe.ai/llms.txt. Start with
 - `ts`: UTC ISO-8601 timestamp.
 - `input_tokens`, `output_tokens`, `model`: copied from the API response. `model` is the versioned ID that answered, even when the request used an alias like `jev-latest`.
 - `cost_estimate`: USD, computed when the line was written as `input_tokens` × the model's price. Only input tokens are billed. It's `null` if the model wasn't in the price table.
+- `tag`: the `JEV_TAG` environment variable at call time, when set, so spend can be split by the tool that made the call (e.g. `JEV_TAG=slack-watcher`).
 - `request_id`: included only when the API returns one.
 
 Prices live in `USD_PER_MTOK_BY_MODEL` in `jev.ts`, keyed by versioned model ID (source: https://docs.typesafe.ai/models.md). A response from a model not in the table prints a warning to stderr, so add the new price when that happens. `--mtd` re-prices every entry since the first of the current local month from `input_tokens` and `model` using the current table, so a corrected price also fixes past totals. The stored `cost_estimate` is not recomputed.
