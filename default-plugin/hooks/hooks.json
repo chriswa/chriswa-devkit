@@ -46,6 +46,18 @@
           }
         ]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Bash|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/permission/auto-deny-bypass-prompts.sh",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
