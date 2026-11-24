@@ -1,6 +1,6 @@
 {
   "name": "mute-tui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Discards Claude's plain-text replies on demand and tells Claude each one was not delivered, so it reaches you through tools instead",
   "types": "./types/index.d.ts"
 }
