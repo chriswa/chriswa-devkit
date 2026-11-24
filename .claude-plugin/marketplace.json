@@ -12,6 +12,10 @@
     {
       "name": "self-terminate",
       "source": "./self-terminate-plugin"
+    },
+    {
+      "name": "mute-tui",
+      "source": "./mute-tui-plugin"
     }
   ]
 }

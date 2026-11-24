@@ -19,3 +19,6 @@ __pycache__/
 
 # Built from tools/claude-print-daemon
 bin/claude-print-daemon
+
+# mute-tui state contract (plugin.json "types")
+!mute-tui-plugin/types/index.d.ts

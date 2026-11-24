@@ -52,6 +52,19 @@ Install it only on a machine with no spaceterm MCP tool:
 /plugin install self-terminate@chriswa-devkit-marketplace
 ```
 
+### 4. `mute-tui` plugin
+
+A hooks module that discards Claude's plain-text replies and tells Claude each
+one was not delivered, so it reaches you through tools instead. It does nothing
+until a session is muted: `/mute-tui [how to reach you]`, the model's
+`mcp__mute-tui__mute_text_output` tool, or `[[mute-tui: how to reach you]]` at
+the start of a prompt (how a spawned session is muted from its first reply).
+Only `/unmute-tui` unmutes.
+
+```bash
+/plugin install mute-tui@chriswa-devkit-marketplace
+```
+
 ## Project Structure
 
 ```
@@ -76,6 +89,11 @@ chriswa-devkit/
 │   │   └── plugin.json
 │   └── skills/
 │       └── self-terminate/   # SIGTERM your own claude process
+├── mute-tui-plugin/          # Mutes Claude's plain-text replies on demand
+│   ├── .claude-plugin/
+│   │   └── plugin.json
+│   ├── hooks/                # hooks.json + register.ts (the hooks module)
+│   └── types/                # state contract
 ├── claude/                   # Claude Code utilities (not plugin)
 │   └── statusline/
 ├── shell/                    # Shell customization
