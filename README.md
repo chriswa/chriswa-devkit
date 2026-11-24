@@ -59,7 +59,8 @@ one was not delivered, so it reaches you through tools instead. It does nothing
 until a session is muted: `/mute-tui [how to reach you]`, the model's
 `mcp__mute-tui__mute_text_output` tool, or `[[mute-tui: how to reach you]]` at
 the start of a prompt (how a spawned session is muted from its first reply).
-Only `/unmute-tui` unmutes.
+Only `/unmute-tui` unmutes. Replies that say nothing, such as "Idle." or "Ending
+turn.", still reach you, so a muted model always has a way to end its turn.
 
 ```bash
 /plugin install mute-tui@chriswa-devkit-marketplace

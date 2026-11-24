@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, TurnStepTextChunk } from 'claude-code'
 
 const muted = atom({ plugin: 'mute-tui', key: 'muted' } as const, false)
 const pending = atom({ plugin: 'mute-tui', key: 'pending' } as const, false)
@@ -28,6 +28,30 @@ const DENIAL =
   'your turn without text.'
 
 const silentEnd = 'Plain text is muted, so no text is expected. End your turn.'
+
+const alreadyMuted =
+  'Text is already muted; this call changed nothing and need not be repeated. ' +
+  'Carry on with your work, or end your turn if nothing is left to do.'
+
+// Replies that say nothing ("Idle.", "Ending turn without text."). A muted model
+// keeps writing these to end a turn, and denying them sends it into a loop of
+// retries, so they pass through to the user instead.
+const CONTENTLESS = [
+  /^(idle|done|waiting|end of turn|turn ends here|no reply needed|no (text|output)|nothing (new )?to (send|report))$/,
+  /^(ending( the)? turn|idle)( (silently|without text|with no (text|output)|while (text( output)? is )?muted))*$/,
+  /^idle until (the |a |an )?[\w' -]{1,40} (fires|completes|reports|notifies|arrives)$/,
+  /^idle until (notified|the next message)$/,
+]
+
+const isContentless = (text: string) => {
+  const plain = text
+    .toLowerCase()
+    .replace(/[*_`]/g, '')
+    .replace(/[\s.!;:,]+$/, '')
+    .replace(/^[\s(]+|[\s)]+$/g, '')
+    .replace(/\s+/g, ' ')
+  return CONTENTLESS.some(pattern => pattern.test(plain))
+}
 
 async function mute($: EngineInterface) {
   await update($, muted, () => true)
@@ -89,6 +113,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: `mcp__mute-tui__${TOOL}` }, async ($, e) => {
+    if (await read($, muted)) return { result: alreadyMuted }
     const how = typeof e.channel === 'string' ? e.channel : ''
     await mute($)
     return { result: mutedNotice(how.trim()) }
@@ -109,17 +134,29 @@ export const register: Register = on => {
   })
 
   // The deny itself: text blocks never leave this hook, so they are neither shown nor
-  // recorded. Subagents' text goes to their spawner, not the user, and passes.
+  // recorded. Each block is held until it ends, then released if it says nothing.
+  // Subagents' text goes to their spawner, not the user, and passes.
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined || !(await read($, muted))) return yield* next(e)
+    let held: TurnStepTextChunk[] = []
     let hasDropped = false
+    const release = () => {
+      const text = held.map(chunk => chunk.text).join('')
+      const out = isContentless(text) ? held : []
+      if (out.length === 0 && text.trim() !== '') hasDropped = true
+      held = []
+      return out
+    }
     for await (const chunk of next(e)) {
-      if (chunk.kind === 'text') {
-        if (chunk.text.trim() !== '') hasDropped = true
+      if (chunk.kind === 'text' && (held.length === 0 || held[0].index === chunk.index)) {
+        held.push(chunk)
         continue
       }
-      yield chunk
+      yield* release()
+      if (chunk.kind === 'text') held.push(chunk)
+      else yield chunk
     }
+    yield* release()
     if (hasDropped) await update($, pending, () => true)
   })
 
