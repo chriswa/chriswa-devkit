@@ -12,6 +12,17 @@ const TOOL = 'mute_text_output'
 
 // The engine's own nudge after a turn's last response showed no text, which a
 // discarded reply always triggers.
+
+// A muted model that thinks it must produce something before stopping fills the
+// gap with no-op tool calls (`true`), hundreds at a time. Every notice says that
+// an empty turn is the right way to stop.
+// The example must stay a reply CONTENTLESS lets through.
+const END_TURN_EXAMPLE = 'Ending turn.'
+const EMPTY_TURN_OK =
+  'When nothing is left to do, end your turn with no text and no tool call: an ' +
+  'empty turn is correct. If you must write something, write only ' +
+  `"${END_TURN_EXAMPLE}", which is allowed through. Never make a tool call just ` +
+  'to have something to output.'
 const EMPTY_RESPONSE_NUDGE = /no visible output/
 
 const reachVia = (how: string) => (how === '' ? 'the mechanism your instructions name' : how)
@@ -20,18 +31,26 @@ const mutedNotice = (how: string) =>
   `Your plain-text messages are now discarded: the user will not see them. ` +
   `Reach the user only through ${reachVia(how)}. Those instructions for reaching ` +
   `the user are now critical, since you have no other way to reach them: keep every ` +
-  `detail of them through any summary or compaction of this conversation.`
+  `detail of them through any summary or compaction of this conversation. ` +
+  EMPTY_TURN_OK
 
 const DENIAL =
   'Your text message was not delivered; the user did not see it. Check your ' +
-  'instructions for what is worth sending and how it should be sent. Otherwise end ' +
-  'your turn without text.'
+  'instructions for what is worth sending and how it should be sent. ' +
+  EMPTY_TURN_OK
 
-const silentEnd = 'Plain text is muted, so no text is expected. End your turn.'
+const silentEnd = 'Plain text is muted, so no text is expected. ' + EMPTY_TURN_OK
+
+// Shell commands that do nothing: `true`, `:`, `echo` with nothing or a fixed word.
+const NO_OP_COMMAND = /^\s*(true|:|echo(\s+("[^"]*"|'[^']*'|[\w.-]+))?)\s*(;\s*)?$/
+
+const noOpDenial =
+  'This command does nothing, so it was not run. A muted turn needs no tool call to ' +
+  'end: stop now with no text, or reply only "' + END_TURN_EXAMPLE + '".'
 
 const alreadyMuted =
   'Text is already muted; this call changed nothing and need not be repeated. ' +
-  'Carry on with your work, or end your turn if nothing is left to do.'
+  'Carry on with your work. ' + EMPTY_TURN_OK
 
 // Replies that say nothing ("Idle.", "Ending turn without text."). A muted model
 // keeps writing these to end a turn, and denying them sends it into a loop of
@@ -158,6 +177,12 @@ export const register: Register = on => {
     }
     yield* release()
     if (hasDropped) await update($, pending, () => true)
+  })
+
+  // A muted model ends a turn with `true` calls, one after another, instead of stopping.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    if (e.agentId !== undefined || !NO_OP_COMMAND.test(e.command) || !(await read($, muted))) return next(e)
+    return { deny: noOpDenial }
   })
 
   // A reply discarded alongside tool calls: the denial rides on the next tool result.
